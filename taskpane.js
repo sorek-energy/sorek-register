@@ -14,7 +14,7 @@
     "https://unpkg.com/@azure/msal-browser@4/lib/msal-browser.min.js",
     "https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"
   ];
-  var STATUS_OUT = ["Issued", "Sent", "Follow-up", "Claim", "Cancelled"];
+  var STATUS_OUT = ["Issued", "Follow-up", "Claim", "Cancelled"];
   var STATUS_IN = ["Logged", "Follow-up", "Claim"];
 
   var pca = null, siteId = null, listIds = {}, companies = [], keywords = [], item = null;
@@ -317,7 +317,7 @@
         var created = await g("POST", listPath("register") + "/items", { fields: {
           Title: number || "(no number)", Direction: dir, Company: code ? companyChoice(code) : "Other",
           MailSubject: subject, MailDate: (item.dateTimeCreated ? new Date(item.dateTimeCreated) : new Date()).toISOString(),
-          Status: dir === "Out" ? "Sent" : "Logged", Variation: $("#var").checked, Keywords: hits.join(", "),
+          Status: dir === "Out" ? "Issued" : "Logged", Variation: $("#var").checked, Keywords: hits.join(", "),
           Sender: from, Recipients: recips.join("; "), MessageId: item.internetMessageId || ""
         } });
         var fresh = await g("GET", listPath("register") + "/items/" + created.id + "?$expand=fields");
