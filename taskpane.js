@@ -198,6 +198,30 @@
       return await createRegister(f2);
     }
   }
+  function regSelect() {
+    var want = ["Title", "Direction", "Status", "Variation", "Impact", "ClaimsNotes", "MailSubject", "Company", "ExternalRef", "CancelReason"];
+    return (regCols ? want.filter(function (k) { return k === "Title" || regCols[k]; }) : want.slice(0, 8)).join(",");
+  }
+  async function patchRegister(id, fields) {
+    var f = Object.assign({}, fields);
+    if (regCols) Object.keys(f).forEach(function (k) { if (k.indexOf("@") < 0 && !regCols[k]) { delete f[k]; delete f[k + "@odata.type"]; } });
+    return g("PATCH", listPath("register") + "/items/" + id + "/fields", f);
+  }
+  var RELEASE_REASONS = ["Email not sent", "Wrong recipient", "Wrong topic", "Sent under another number"];
+  function reasonForm(prefill) {
+    return '<div class="lbl">Why is the number cancelled?</div><div class="pills" id="rsPills">' +
+      RELEASE_REASONS.map(function (r) { return '<button class="pill" data-rs="' + esc(r) + '" aria-pressed="false">' + esc(r) + '</button>'; }).join("") + '</div>' +
+      '<input type="text" id="rsText" style="margin-top:8px" placeholder="Explanation (required)" value="' + esc(prefill || "") + '">';
+  }
+  function wireReasons() {
+    var p = $("#rsPills"); if (!p) return;
+    p.onclick = function (e) {
+      var b = e.target.closest("[data-rs]"); if (!b) return;
+      document.querySelectorAll("#rsPills .pill").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+      var t = $("#rsText"); if (!t.value || RELEASE_REASONS.indexOf(t.value) >= 0) t.value = b.dataset.rs;
+      t.focus();
+    };
+  }
   function fmt(code, n) { return C.project + "-" + C.issuer + "-" + code + "-" + pad4(n); }
 
   /* ---------- Number reservation (safe for several users at once) ---------- */
@@ -229,11 +253,11 @@
 
   async function findRecord(opts) {
     if (opts.messageId) {
-      var a = await items("register", "Title,Direction,Status,Variation,Impact,ClaimsNotes,MailSubject,Company,ExternalRef", "fields/MessageId eq '" + q(opts.messageId) + "'");
+      var a = await items("register", regSelect(), "fields/MessageId eq '" + q(opts.messageId) + "'");
       if (a.length) return a[0];
     }
     if (opts.number) {
-      var b = await items("register", "Title,Direction,Status,Variation,Impact,ClaimsNotes,MailSubject,Company,ExternalRef", "fields/Title eq '" + q(opts.number) + "'");
+      var b = await items("register", regSelect(), "fields/Title eq '" + q(opts.number) + "'");
       var out = b.filter(function (x) { return (x.fields || {}).Direction === "Out"; });
       if (out.length) return out[0];
     }
@@ -265,24 +289,30 @@
       '<label class="varbox"><input type="checkbox" id="recVar"' + (st.variation ? " checked" : "") + '><span><b>Variation</b><br><span class="muted">Tracked by the Claims Manager</span></span></label>' +
       '<div><div class="lbl">Impact</div><div class="checks">' + ["Cost", "Time", "Scope"].map(function (k) { return '<label><input type="checkbox" data-imp="' + k + '"' + (impact.indexOf(k) >= 0 ? " checked" : "") + '> ' + k + '</label>'; }).join("") + '</div></div>' +
       '<div><div class="lbl">Claims notes</div><textarea id="recNotes">' + esc(f.ClaimsNotes || "") + '</textarea></div>' +
+      '<div id="cancelBox"' + (st.status === "Cancelled" ? "" : " hidden") + '>' + reasonForm(f.CancelReason) + '</div>' +
       '<button class="btnp" id="recSave">Save</button>' +
-      (opts.compose && ownNumber && f.Status !== "Cancelled" ? '<div class="warn" style="margin-top:4px">Not sending this email? <button class="btns" id="relBtn" style="margin-top:8px;width:100%">Release number</button></div>' : "")
+      (opts.compose && ownNumber && f.Status !== "Cancelled" ? '<div class="warn" id="relBox" style="margin-top:4px">Not sending this email? <button class="btns" id="relBtn" style="margin-top:8px;width:100%">Release number</button></div>' : "")
     );
-    if ($("#relBtn")) $("#relBtn").onclick = function () { releaseNumber(rec.id, f.Title, false); };
+    if ($("#relBtn")) $("#relBtn").onclick = function () { askRelease(rec.id, f.Title, false); };
     $("#stPills").onclick = function (e) {
       var b = e.target.closest("[data-st]"); if (!b) return;
       st.status = b.dataset.st;
       document.querySelectorAll("#stPills .pill").forEach(function (p) { p.setAttribute("aria-pressed", String(p === b)); });
       if (st.status === "Claim") $("#recVar").checked = true;
+      $("#cancelBox").hidden = st.status !== "Cancelled";
     };
+    wireReasons();
     $("#recSave").onclick = async function () {
-      var btn = this; btn.disabled = true; btn.textContent = "Saving…";
+      var btn = this;
+      var reason = $("#rsText") ? $("#rsText").value.trim() : "";
+      if (st.status === "Cancelled" && !reason) { toast("Write why the number is cancelled", true); $("#rsText").focus(); return; }
+      btn.disabled = true; btn.textContent = "Saving…";
       var imp = Array.prototype.slice.call(document.querySelectorAll("[data-imp]")).filter(function (c) { return c.checked; }).map(function (c) { return c.dataset.imp; });
       try {
-        await g("PATCH", listPath("register") + "/items/" + rec.id + "/fields", {
-          Status: st.status, Variation: $("#recVar").checked, ClaimsNotes: $("#recNotes").value,
-          "Impact@odata.type": "Collection(Edm.String)", Impact: imp
-        });
+        var upd = { Status: st.status, Variation: $("#recVar").checked, ClaimsNotes: $("#recNotes").value,
+          "Impact@odata.type": "Collection(Edm.String)", Impact: imp };
+        if (st.status === "Cancelled") upd.CancelReason = reason;
+        await patchRegister(rec.id, upd);
         toast("Saved in the register");
       } catch (e) { toast("Not saved: " + e.message, true); }
       btn.disabled = false; btn.textContent = "Save";
@@ -363,9 +393,9 @@
           '<li>' + (ccAdded ? "sorek@sorek.energy added to CC" : "sorek@sorek.energy already in CC") + '</li>' +
           '<li>Logged in the register as <b>Issued</b></li>' + (variation ? '<li>Marked <b>Variation</b></li>' : "") + '</ul>' +
           '<p class="muted">Finish the email and click Send as usual.</p>' +
-          '<div class="warn">Not sending this email after all? <button class="btns" id="relBtn" style="margin-top:8px;width:100%">Release number</button><span class="muted" style="display:block;margin-top:6px">The number is marked Cancelled in the register and removed from the subject. Cancelled numbers are not reused.</span></div>'
+          '<div class="warn" id="relBox">Not sending this email after all? <button class="btns" id="relBtn" style="margin-top:8px;width:100%">Release number</button><span class="muted" style="display:block;margin-top:6px">The number is marked Cancelled in the register and removed from the subject. Cancelled numbers are not reused.</span></div>'
         );
-        $("#relBtn").onclick = function () { releaseNumber(res.id, res.num, ccAdded); };
+        $("#relBtn").onclick = function () { askRelease(res.id, res.num, ccAdded); };
         try { item.notificationMessages.removeAsync("sorekHint", function () {}); } catch (e) { /* none */ }
       } catch (e) {
         toast("The number was not inserted: " + e.message, true);
@@ -376,10 +406,23 @@
   }
 
   /* ---------- Release a number that will not be sent ---------- */
-  async function releaseNumber(recId, num, removeCc) {
-    var b = $("#relBtn"); if (b) { b.disabled = true; b.textContent = "Releasing…"; }
+  function askRelease(recId, num, removeCc) {
+    var box = $("#relBox"), before = box.innerHTML;
+    box.innerHTML = '<b>Release ' + esc(num) + '</b><p class="muted" style="margin:4px 0 10px">It is marked Cancelled in the register with your explanation, and removed from the subject. It is not reused.</p>' +
+      reasonForm("") +
+      '<div style="display:flex;gap:8px;margin-top:10px"><button class="btnp" id="relGo" style="flex:1">Release</button><button class="btns" id="relBack">Back</button></div>';
+    wireReasons();
+    $("#relBack").onclick = function () { box.innerHTML = before; $("#relBtn").onclick = function () { askRelease(recId, num, removeCc); }; };
+    $("#relGo").onclick = function () {
+      var reason = $("#rsText").value.trim();
+      if (!reason) { toast("Write why the number is cancelled", true); $("#rsText").focus(); return; }
+      this.disabled = true; this.textContent = "Releasing…";
+      releaseNumber(recId, num, removeCc, reason);
+    };
+  }
+  async function releaseNumber(recId, num, removeCc, reason) {
     try {
-      await g("PATCH", listPath("register") + "/items/" + recId + "/fields", { Status: "Cancelled" });
+      await patchRegister(recId, { Status: "Cancelled", CancelReason: reason || "" });
       var subj = await oget(item.subject);
       var clean = String(subj || "").replace(new RegExp(String(num).replace(/[-]/g, "\\-") + "_?", "i"), "").trim();
       await oset(item.subject, clean);
@@ -388,13 +431,13 @@
         var keep = cc.filter(function (r) { return String(r.emailAddress || "").toLowerCase() !== C.generalMailbox.toLowerCase(); });
         await new Promise(function (r) { item.cc.setAsync(keep, function () { r(); }); });
       }
-      show('<div class="ok"><b>Number released</b><div class="num" style="margin-top:4px">' + esc(num) + '</div><p class="muted">Marked Cancelled in the register and removed from the subject.</p></div>' +
+      show('<div class="ok"><b>Number released</b><div class="num" style="margin-top:4px">' + esc(num) + '</div><p class="muted">Marked Cancelled in the register (' + esc(reason || "") + ') and removed from the subject.</p></div>' +
            '<button class="btns" id="again">Get a new number for this email</button>');
       $("#again").onclick = function () { composeView().catch(function (e) { showError("Something went wrong", e.message); }); };
       toast(num + " released");
     } catch (e) {
       toast("Not released: " + e.message, true);
-      if (b) { b.disabled = false; b.textContent = "Release number"; }
+      var go = $("#relGo"); if (go) { go.disabled = false; go.textContent = "Release"; }
     }
   }
 
