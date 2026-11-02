@@ -109,11 +109,14 @@
       if (!f) throw new Error('The SharePoint list "' + C.lists[k] + '" was not found on the site.');
       listIds[k] = f.id;
     });
-    var co = await items("companies", "Title,CompanyName,Domains,LastNumber");
+    var co;
+    try { co = await items("companies", "Title,CompanyName,Domains,LastNumber,RefPrefix"); }
+    catch (e) { co = await items("companies", "Title,CompanyName,Domains,LastNumber"); }
     companies = co.map(function (x) {
       var f = x.fields || {};
       return { id: x.id, code: String(f.Title || "").trim().toUpperCase(), name: f.CompanyName || "", last: Number(f.LastNumber || 0),
-               domains: String(f.Domains || "").split(/[;,\s]+/).map(function (d) { return d.trim().toLowerCase().replace(/^@/, ""); }).filter(Boolean) };
+               domains: String(f.Domains || "").split(/[;,\s]+/).map(function (d) { return d.trim().toLowerCase().replace(/^@/, ""); }).filter(Boolean),
+               prefixes: String(f.RefPrefix || "").split(/[;,\s]+/).map(function (d) { return d.trim().toUpperCase(); }).filter(Boolean) };
     }).filter(function (c) { return c.code && c.code !== C.issuer; }).sort(function (a, b) { return a.code.localeCompare(b.code); });
     var kw = await items("keywords", "Title,Category");
     keywords = kw.map(function (x) { return String((x.fields || {}).Title || "").trim(); }).filter(Boolean);
@@ -121,7 +124,8 @@
     var rs = roam();
     if (rs) {
       var map = {}; companies.forEach(function (c) { if (c.domains.length) map[c.code] = c.domains; });
-      rs.set("sorDomains", JSON.stringify(map)); saveRoam();
+      var names = {}; companies.forEach(function (c) { if (c.name) names[c.code] = c.name; });
+      rs.set("sorDomains", JSON.stringify(map)); rs.set("sorNames", JSON.stringify(names)); saveRoam();
     }
   }
 
@@ -141,7 +145,42 @@
     }
     return null;
   }
-  function companyChoice(code) { return C.companyChoices.indexOf(code) >= 0 ? code : "Other"; }
+  function codeFromNumber(num) {
+    var p = String(num || "").toUpperCase().split("-");
+    if (p.length < 4) return null;
+    return p[1] === C.issuer ? p[2] : p[1];
+  }
+  function coNameOf(code) { var c = companies.find(function (x) { return x.code === String(code || "").toUpperCase(); }); return c && c.name && c.name !== c.code ? c.name : ""; }
+  function companyChoice(code) { return code || "Other"; }
+  function isOwnDomain(d) { return (C.ownDomains || []).some(function (x) { x = String(x).toLowerCase(); return d === x || d.endsWith("." + x); }); }
+  // Other parties' own correspondence numbers, e.g. Siemens "IL5002-SE-SPE-00187" (prefix set in Companies.RefPrefix).
+  // Returns [{ref, code}] in the order they appear: the first is usually the email's own number, the rest are references.
+  function externalRefs(text) {
+    var out = [], seen = {};
+    companies.forEach(function (c) {
+      c.prefixes.forEach(function (p) {
+        var re = new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[A-Z0-9-]*\\d", "gi"), m;
+        while ((m = re.exec(text)) !== null) {
+          var r = m[0].toUpperCase();
+          if (!seen[r]) { seen[r] = true; out.push({ ref: r, code: c.code, at: m.index }); }
+        }
+      });
+    });
+    return out.sort(function (a, b) { return a.at - b.at; });
+  }
+  // Create a register row; tolerate a Company column without the new code and a missing ExternalRef column
+  async function createRegister(fields) {
+    try { return await g("POST", listPath("register") + "/items", { fields: fields }); }
+    catch (e) {
+      if (e.status !== 400) throw e;
+      var f2 = Object.assign({}, fields);
+      if (/ExternalRef/i.test(e.message)) delete f2.ExternalRef;
+      else if (f2.Company && f2.Company !== "Other") f2.Company = "Other";
+      else if ("ExternalRef" in f2) delete f2.ExternalRef;
+      else throw e;
+      return await createRegister(f2);
+    }
+  }
   function fmt(code, n) { return C.project + "-" + C.issuer + "-" + code + "-" + pad4(n); }
 
   /* ---------- Number reservation (safe for several users at once) ---------- */
@@ -159,7 +198,7 @@
         if (e.status === 400) { await g("PATCH", listPath("companies") + "/items/" + co.id + "/fields", { LastNumber: n }); }
         else throw e;
       }
-      var created = await g("POST", listPath("register") + "/items", { fields: Object.assign(buildFields(num), { Title: num }) });
+      var created = await createRegister(Object.assign(buildFields(num), { Title: num }));
       var same = await items("register", "Title", "fields/Title eq '" + q(num) + "'");
       if (same.length > 1) {
         var ids = same.map(function (x) { return Number(x.id); }).sort(function (a, b) { return a - b; });
@@ -173,11 +212,11 @@
 
   async function findRecord(opts) {
     if (opts.messageId) {
-      var a = await items("register", "Title,Direction,Status,Variation,Impact,ClaimsNotes,MailSubject,Company", "fields/MessageId eq '" + q(opts.messageId) + "'");
+      var a = await items("register", "Title,Direction,Status,Variation,Impact,ClaimsNotes,MailSubject,Company,ExternalRef", "fields/MessageId eq '" + q(opts.messageId) + "'");
       if (a.length) return a[0];
     }
     if (opts.number) {
-      var b = await items("register", "Title,Direction,Status,Variation,Impact,ClaimsNotes,MailSubject,Company", "fields/Title eq '" + q(opts.number) + "'");
+      var b = await items("register", "Title,Direction,Status,Variation,Impact,ClaimsNotes,MailSubject,Company,ExternalRef", "fields/Title eq '" + q(opts.number) + "'");
       var out = b.filter(function (x) { return (x.fields || {}).Direction === "Out"; });
       if (out.length) return out[0];
     }
@@ -185,22 +224,27 @@
   }
 
   /* ---------- Record panel (shared by read and compose) ---------- */
-  function recordPanel(rec, hits) {
+  function recordPanel(rec, hits, opts) {
+    opts = opts || {};
     var f = rec.fields || {};
     var dir = f.Direction || "In";
-    var statuses = dir === "Out" ? STATUS_OUT : STATUS_IN;
+    var ownNumber = dir === "Out" && String(f.Title || "").toUpperCase().indexOf(C.project + "-" + C.issuer + "-") === 0 && f.Status !== "Logged";
+    var statuses = ownNumber ? STATUS_OUT : STATUS_IN;
     var impact = Array.isArray(f.Impact) ? f.Impact : [];
     var st = { status: f.Status || statuses[0], variation: !!f.Variation, impact: impact.slice() };
     show(
       '<div class="ok"><b>In the register</b><div class="num" style="margin-top:4px">' + esc(f.Title || "") + '</div>' +
-      '<p class="muted">' + (dir === "Out" ? "Outgoing" : "Incoming") + (f.Company ? " · " + esc(f.Company) : "") + '</p></div>' +
+      (f.ExternalRef ? '<p class="muted" style="margin-top:4px">Their ref: <span class="mono">' + esc(f.ExternalRef) + '</span></p>' : "") +
+      '<p class="muted">' + (dir === "Out" ? "Outgoing" : "Incoming") + (f.Company ? " · " + esc(f.Company) + (coNameOf(f.Company) ? " – " + esc(coNameOf(f.Company)) : "") : "") + '</p></div>' +
       (hits && hits.length ? '<div><div class="lbl">Keywords found</div>' + hits.map(function (k) { return '<span class="kw">' + esc(k) + '</span>'; }).join("") + '</div>' : "") +
       '<div><div class="lbl">Status</div><div class="pills" id="stPills">' + statuses.map(function (s) { return '<button class="pill" data-st="' + esc(s) + '" aria-pressed="' + (s === st.status) + '">' + esc(s) + '</button>'; }).join("") + '</div></div>' +
       '<label class="varbox"><input type="checkbox" id="recVar"' + (st.variation ? " checked" : "") + '><span><b>Variation</b><br><span class="muted">Tracked by the Claims Manager</span></span></label>' +
       '<div><div class="lbl">Impact</div><div class="checks">' + ["Cost", "Time", "Scope"].map(function (k) { return '<label><input type="checkbox" data-imp="' + k + '"' + (impact.indexOf(k) >= 0 ? " checked" : "") + '> ' + k + '</label>'; }).join("") + '</div></div>' +
       '<div><div class="lbl">Claims notes</div><textarea id="recNotes">' + esc(f.ClaimsNotes || "") + '</textarea></div>' +
-      '<button class="btnp" id="recSave">Save</button>'
+      '<button class="btnp" id="recSave">Save</button>' +
+      (opts.compose && ownNumber && f.Status !== "Cancelled" ? '<div class="warn" style="margin-top:4px">Not sending this email? <button class="btns" id="relBtn" style="margin-top:8px;width:100%">Release number</button></div>' : "")
     );
+    if ($("#relBtn")) $("#relBtn").onclick = function () { releaseNumber(rec.id, f.Title, false); };
     $("#stPills").onclick = function (e) {
       var b = e.target.closest("[data-st]"); if (!b) return;
       st.status = b.dataset.st;
@@ -229,14 +273,25 @@
     var existing = (subject || "").match(NUM_RE);
     if (existing) {
       var rec = await findRecord({ number: existing[0].toUpperCase() });
-      if (rec) { recordPanel(rec, []); return; }
+      if (rec) { recordPanel(rec, [], { compose: true }); return; }
       show('<div class="warn">This email already has the number <b class="mono">' + esc(existing[0]) + '</b> in the subject, but it is not in the register.</div>');
       return;
     }
     var body = await bodyText();
     var hits = scan(subject + " " + body);
     var detected = codeForAddresses(addrs);
-    var st = { code: detected || (companies[0] && companies[0].code), variation: hits.length > 0 };
+    var st = { code: detected || (companies[0] && companies[0].code), variation: hits.length > 0, picked: false };
+    try {
+      item.addHandlerAsync(Office.EventType.RecipientsChanged, async function () {
+        try {
+          var t2 = await oget(item.to), c2 = await oget(item.cc);
+          addrs = t2.concat(c2).map(function (r) { return r.emailAddress; });
+          detected = codeForAddresses(addrs);
+          if (!st.picked && detected) st.code = detected;
+          if ($("#insert") && !$("#insert").disabled) { st.variation = $("#var").checked; var tp = $("#topic").value; render(); $("#topic").value = tp; }
+        } catch (e) { /* ignore */ }
+      });
+    } catch (e) { /* older Outlook */ }
     var isReply = REPLY_RE.test(subject || "");
 
     function render() {
@@ -244,15 +299,17 @@
       var next = co ? fmt(co.code, co.last + 1) : "—";
       show(
         (isReply ? '<div class="warn">This looks like a reply or forward. Replies are not numbered; keep the original subject.</div>' : "") +
+        (addrs.length ? "" : '<div class="warn">No recipients yet. Add them first, so the company is detected and the recipients are recorded.</div>') +
         '<div><div class="lbl">Recipient' + (detected ? " · detected from the address" : "") + '</div><div class="pills" id="coPills">' +
-        companies.map(function (c) { return '<button class="pill" data-co="' + esc(c.code) + '" aria-pressed="' + (c.code === st.code) + '" title="' + esc(c.name) + '">' + esc(c.code) + '</button>'; }).join("") + '</div></div>' +
+        companies.map(function (c) { return '<button class="pill" data-co="' + esc(c.code) + '" aria-pressed="' + (c.code === st.code) + '" title="' + esc(c.name) + '">' + esc(c.code) + '</button>'; }).join("") + '</div>' +
+        (co ? '<div class="coname"><b>' + esc(co.code) + '</b> – ' + esc(co.name || co.code) + '</div>' : "") + '</div>' +
         '<div><div class="lbl">Next number</div><div class="num">' + esc(next) + '</div><p class="muted">Taken only when you click Insert. If someone else takes it first, you get the next one.</p></div>' +
         '<div><div class="lbl">Topic</div><input type="text" id="topic" value="' + esc(subject || "") + '" placeholder="Short topic of the email"></div>' +
         '<label class="varbox"><input type="checkbox" id="var"' + (st.variation ? " checked" : "") + '><span><b>Track as variation</b><br><span class="muted">' +
         (hits.length ? "Keywords found: " + esc(hits.join(", ")) : "Tick if this email may support a variation request or claim.") + '</span></span></label>' +
         '<button class="btnp" id="insert"' + (co ? "" : " disabled") + '>Insert number</button>'
       );
-      $("#coPills").onclick = function (e) { var b = e.target.closest("[data-co]"); if (!b) return; st.code = b.dataset.co; st.variation = $("#var").checked; var t = $("#topic").value; render(); $("#topic").value = t; };
+      $("#coPills").onclick = function (e) { var b = e.target.closest("[data-co]"); if (!b) return; st.code = b.dataset.co; st.picked = true; st.variation = $("#var").checked; var t = $("#topic").value; render(); $("#topic").value = t; };
       $("#insert").onclick = doInsert;
     }
 
@@ -261,6 +318,7 @@
       var topic = $("#topic").value.trim() || "Topic";
       var variation = $("#var").checked;
       try {
+        addrs = (await oget(item.to)).concat(await oget(item.cc)).map(function (r) { return r.emailAddress; });
         var res = await reserve(st.code, function (num) {
           return {
             Direction: "Out", Company: companyChoice(st.code), MailSubject: num + "_" + topic, MailDate: new Date().toISOString(),
@@ -276,12 +334,15 @@
           ccAdded = true;
         }
         show(
-          '<div class="ok"><b>Number inserted</b><div class="num" style="margin-top:4px">' + esc(res.num) + '</div></div>' +
+          '<div class="ok"><b>Number inserted</b><div class="num" style="margin-top:4px">' + esc(res.num) + '</div>' + (coNameOf(st.code) ? '<p class="muted">' + esc(coNameOf(st.code)) + '</p>' : "") + '</div>' +
           '<ul class="done"><li>Number added to the subject</li>' +
           '<li>' + (ccAdded ? "sorek@sorek.energy added to CC" : "sorek@sorek.energy already in CC") + '</li>' +
           '<li>Logged in the register as <b>Issued</b></li>' + (variation ? '<li>Marked <b>Variation</b></li>' : "") + '</ul>' +
-          '<p class="muted">Finish the email and click Send as usual.</p>'
+          '<p class="muted">Finish the email and click Send as usual.</p>' +
+          '<div class="warn">Not sending this email after all? <button class="btns" id="relBtn" style="margin-top:8px;width:100%">Release number</button><span class="muted" style="display:block;margin-top:6px">The number is marked Cancelled in the register and removed from the subject. Cancelled numbers are not reused.</span></div>'
         );
+        $("#relBtn").onclick = function () { releaseNumber(res.id, res.num, ccAdded); };
+        try { item.notificationMessages.removeAsync("sorekHint", function () {}); } catch (e) { /* none */ }
       } catch (e) {
         toast("The number was not inserted: " + e.message, true);
         btn.disabled = false; btn.textContent = "Insert number";
@@ -290,23 +351,59 @@
     render();
   }
 
+  /* ---------- Release a number that will not be sent ---------- */
+  async function releaseNumber(recId, num, removeCc) {
+    var b = $("#relBtn"); if (b) { b.disabled = true; b.textContent = "Releasing…"; }
+    try {
+      await g("PATCH", listPath("register") + "/items/" + recId + "/fields", { Status: "Cancelled" });
+      var subj = await oget(item.subject);
+      var clean = String(subj || "").replace(new RegExp(String(num).replace(/[-]/g, "\\-") + "_?", "i"), "").trim();
+      await oset(item.subject, clean);
+      if (removeCc) {
+        var cc = await oget(item.cc);
+        var keep = cc.filter(function (r) { return String(r.emailAddress || "").toLowerCase() !== C.generalMailbox.toLowerCase(); });
+        await new Promise(function (r) { item.cc.setAsync(keep, function () { r(); }); });
+      }
+      show('<div class="ok"><b>Number released</b><div class="num" style="margin-top:4px">' + esc(num) + '</div><p class="muted">Marked Cancelled in the register and removed from the subject.</p></div>' +
+           '<button class="btns" id="again">Get a new number for this email</button>');
+      $("#again").onclick = function () { composeView().catch(function (e) { showError("Something went wrong", e.message); }); };
+      toast(num + " released");
+    } catch (e) {
+      toast("Not released: " + e.message, true);
+      if (b) { b.disabled = false; b.textContent = "Release number"; }
+    }
+  }
+
   /* ---------- Read ---------- */
   async function readView() {
     var subject = item.subject || "";
     var from = (item.from && item.from.emailAddress) || "";
-    var fromUs = domainOf(from) === C.ownDomain || domainOf(from).endsWith("." + C.ownDomain);
+    var fromUs = isOwnDomain(domainOf(from));
     var m = subject.match(NUM_RE);
     var number = m ? m[0].toUpperCase() : null;
     var body = await bodyText();
     var hits = scan(subject + " " + body);
+    var refs = externalRefs(subject);
+    var refText = refs.map(function (r) { return r.ref; }).join("; ");
     var rec = await findRecord({ messageId: item.internetMessageId, number: fromUs && number && number.indexOf(C.project + "-" + C.issuer + "-") === 0 ? number : null });
-    if (rec) { recordPanel(rec, hits); return; }
+    if (rec) {
+      var rf = rec.fields || {};
+      if (refText && !rf.ExternalRef) {
+        // fill in their reference on rows logged before this feature existed
+        var patch = { ExternalRef: refText };
+        if (!rf.Title || rf.Title === "(no number)") patch.Title = refs[0].ref;
+        try { await g("PATCH", listPath("register") + "/items/" + rec.id + "/fields", patch); Object.assign(rf, patch); } catch (e) { /* column may not exist yet */ }
+      }
+      recordPanel(rec, hits); return;
+    }
 
     var recips = (item.to || []).concat(item.cc || []).map(function (r) { return r.emailAddress; });
     var dir = fromUs ? "Out" : "In";
-    var code = fromUs ? codeForAddresses(recips) : codeForAddresses([from]);
+    var code = (number && codeFromNumber(number)) || (fromUs ? codeForAddresses(recips) : codeForAddresses([from])) || (refs[0] && refs[0].code) || null;
     show(
-      '<div class="warn"><b>Not in the register yet.</b><br><span class="muted">' + (dir === "In" ? "Incoming" : "Outgoing") + (code ? " · " + esc(code) : "") + (number ? " · ref " + esc(number) : "") + '</span></div>' +
+      '<div class="warn"><b>Not in the register yet.</b><br><span class="muted">' + (dir === "In" ? "Incoming" : "Outgoing") + (code ? " · " + esc(code) : "") + (number ? " · ref " + esc(number) : "") + '</span>' +
+      (refs.length ? '<div style="margin-top:6px;font-size:13px">Their ref: <b class="mono">' + esc(refs[0].ref) + '</b>' + (refs.length > 1 ? '<br><span class="muted">Refers to: ' + esc(refs.slice(1).map(function (r) { return r.ref; }).join(", ")) + '</span>' : "") + '</div>' : "") +
+      '</div>' +
       (hits.length ? '<div><div class="lbl">Keywords found</div>' + hits.map(function (k) { return '<span class="kw">' + esc(k) + '</span>'; }).join("") + '</div>' : "") +
       '<label class="varbox"><input type="checkbox" id="var"' + (hits.length ? " checked" : "") + '><span><b>Variation</b><br><span class="muted">Track for the Claims Manager</span></span></label>' +
       '<button class="btnp" id="logBtn">Log to register</button>'
@@ -314,12 +411,12 @@
     $("#logBtn").onclick = async function () {
       var btn = this; btn.disabled = true; btn.textContent = "Logging…";
       try {
-        var created = await g("POST", listPath("register") + "/items", { fields: {
-          Title: number || "(no number)", Direction: dir, Company: code ? companyChoice(code) : "Other",
+        var created = await createRegister({
+          Title: number || (refs[0] && refs[0].ref) || "(no number)", ExternalRef: refText, Direction: dir, Company: code ? companyChoice(code) : "Other",
           MailSubject: subject, MailDate: (item.dateTimeCreated ? new Date(item.dateTimeCreated) : new Date()).toISOString(),
-          Status: dir === "Out" ? "Issued" : "Logged", Variation: $("#var").checked, Keywords: hits.join(", "),
+          Status: "Logged", Variation: $("#var").checked, Keywords: hits.join(", "),
           Sender: from, Recipients: recips.join("; "), MessageId: item.internetMessageId || ""
-        } });
+        });
         var fresh = await g("GET", listPath("register") + "/items/" + created.id + "?$expand=fields");
         toast("Logged in the register");
         recordPanel(fresh, hits);
@@ -331,10 +428,17 @@
   function footer(compose) {
     var rs = roam();
     var on = !(rs && rs.get("sorReminder") === false);
-    $("#foot").innerHTML = (compose ? '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' : "") +
+    var barOn = !(rs && rs.get("sorBar") === false);
+    $("#foot").innerHTML = (compose ? '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
+      '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' : "") +
       '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + '</span>';
     var r = $("#remind");
     if (r) r.onchange = function () { if (rs) { rs.set("sorReminder", r.checked); saveRoam(); toast(r.checked ? "Send reminder on" : "Send reminder off"); } };
+    var bt = $("#barTgl");
+    if (bt) bt.onchange = function () {
+      if (rs) { rs.set("sorBar", bt.checked); saveRoam(); toast(bt.checked ? "Project-email bar on" : "Project-email bar off"); }
+      if (!bt.checked) { try { item.notificationMessages.removeAsync("sorekHint", function () {}); } catch (e) { /* none */ } }
+    };
   }
 
   /* ---------- Start ---------- */

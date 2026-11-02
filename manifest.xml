@@ -5,7 +5,7 @@
            xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
            xsi:type="MailApp">
   <Id>eaed49d9-213a-4115-a0da-44be3d04bf72</Id>
-  <Version>1.0.0.0</Version>
+  <Version>1.0.1.0</Version>
   <ProviderName>Sorek Energy</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Sorek Register"/>
@@ -111,6 +111,7 @@
             <ExtensionPoint xsi:type="LaunchEvent">
               <LaunchEvents>
                 <LaunchEvent Type="OnMessageSend" FunctionName="onMessageSendHandler" SendMode="PromptUser"/>
+                <LaunchEvent Type="OnMessageRecipientsChanged" FunctionName="onRecipientsChangedHandler"/>
               </LaunchEvents>
               <SourceLocation resid="WebViewRuntime.Url"/>
             </ExtensionPoint>
@@ -132,7 +133,7 @@
         <bt:ShortStrings>
           <bt:String id="Group.Label" DefaultValue="Sorek"/>
           <bt:String id="ReadButton.Label" DefaultValue="Sorek Register"/>
-          <bt:String id="ComposeButton.Label" DefaultValue="SOR Number"/>
+          <bt:String id="ComposeButton.Label" DefaultValue="Get SOR Number"/>
         </bt:ShortStrings>
         <bt:LongStrings>
           <bt:String id="ReadButton.Tooltip" DefaultValue="Mark this email as Variation, Follow-up or Claim, or log it to the register."/>
