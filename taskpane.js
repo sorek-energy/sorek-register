@@ -17,7 +17,7 @@
   var STATUS_OUT = ["Issued", "Follow-up", "Claim", "Cancelled"];
   var STATUS_IN = ["Logged", "Follow-up", "Claim"];
 
-  var pca = null, siteId = null, listIds = {}, companies = [], keywords = [], item = null;
+  var regCols = null, pca = null, siteId = null, listIds = {}, companies = [], keywords = [], item = null;
   var $ = function (s) { return document.querySelector(s); };
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -109,6 +109,11 @@
       if (!f) throw new Error('The SharePoint list "' + C.lists[k] + '" was not found on the site.');
       listIds[k] = f.id;
     });
+    try {
+      var cols = await g("GET", listPath("register") + "/columns?$select=name,choice&$top=200");
+      regCols = {};
+      (cols.value || []).forEach(function (c) { regCols[c.name] = c; });
+    } catch (e) { regCols = null; }
     var co;
     try { co = await items("companies", "Title,CompanyName,Domains,LastNumber,RefPrefix"); }
     catch (e) { co = await items("companies", "Title,CompanyName,Domains,LastNumber"); }
@@ -151,7 +156,15 @@
     return p[1] === C.issuer ? p[2] : p[1];
   }
   function coNameOf(code) { var c = companies.find(function (x) { return x.code === String(code || "").toUpperCase(); }); return c && c.name && c.name !== c.code ? c.name : ""; }
-  function companyChoice(code) { return code || "Other"; }
+  function companyChoice(code) {
+    if (!code) return "Other";
+    var col = regCols && regCols.Company;
+    if (col && col.choice) {
+      var ok = (col.choice.choices || []).indexOf(code) >= 0 || col.choice.allowTextEntry;
+      return ok ? code : "Other";
+    }
+    return code;
+  }
   function isOwnDomain(d) { return (C.ownDomains || []).some(function (x) { x = String(x).toLowerCase(); return d === x || d.endsWith("." + x); }); }
   // Other parties' own correspondence numbers, e.g. Siemens "IL5002-SE-SPE-00187" (prefix set in Companies.RefPrefix).
   // Returns [{ref, code}] in the order they appear: the first is usually the email's own number, the rest are references.
@@ -170,6 +183,10 @@
   }
   // Create a register row; tolerate a Company column without the new code and a missing ExternalRef column
   async function createRegister(fields) {
+    if (regCols) {
+      fields = Object.assign({}, fields);
+      Object.keys(fields).forEach(function (k) { if (k !== "Title" && k.indexOf("@") < 0 && !regCols[k]) delete fields[k]; });
+    }
     try { return await g("POST", listPath("register") + "/items", { fields: fields }); }
     catch (e) {
       if (e.status !== 400) throw e;
@@ -234,7 +251,14 @@
     var st = { status: f.Status || statuses[0], variation: !!f.Variation, impact: impact.slice() };
     show(
       '<div class="ok"><b>In the register</b><div class="num" style="margin-top:4px">' + esc(f.Title || "") + '</div>' +
-      (f.ExternalRef ? '<p class="muted" style="margin-top:4px">Their ref: <span class="mono">' + esc(f.ExternalRef) + '</span></p>' : "") +
+      (function () {
+        var refs = String(f.ExternalRef || "").split(/;\s*/).filter(Boolean);
+        var other = refs.filter(function (r) { return r.toUpperCase() !== String(f.Title || "").toUpperCase(); });
+        if (!refs.length) return "";
+        return other.length && other.length < refs.length
+          ? '<p class="muted" style="margin-top:4px">Refers to: <span class="mono">' + esc(other.join(", ")) + '</span></p>'
+          : '<p class="muted" style="margin-top:4px">Their ref: <span class="mono">' + esc(refs.join(", ")) + '</span></p>';
+      })() +
       '<p class="muted">' + (dir === "Out" ? "Outgoing" : "Incoming") + (f.Company ? " · " + esc(f.Company) + (coNameOf(f.Company) ? " – " + esc(coNameOf(f.Company)) : "") : "") + '</p></div>' +
       (hits && hits.length ? '<div><div class="lbl">Keywords found</div>' + hits.map(function (k) { return '<span class="kw">' + esc(k) + '</span>'; }).join("") + '</div>' : "") +
       '<div><div class="lbl">Status</div><div class="pills" id="stPills">' + statuses.map(function (s) { return '<button class="pill" data-st="' + esc(s) + '" aria-pressed="' + (s === st.status) + '">' + esc(s) + '</button>'; }).join("") + '</div></div>' +
