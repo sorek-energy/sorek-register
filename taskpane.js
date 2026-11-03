@@ -307,9 +307,25 @@
       return r.map(function (x) { return x.fields || {}; })
         .filter(function (f) { return f.Status !== "Cancelled" && f.Title && f.Title !== "(no number)"; })
         .sort(function (a, b) { return String(b.MailDate || "").localeCompare(String(a.MailDate || "")); })
-        .slice(0, 5)
+        .slice(0, 300)
         .map(function (f) { return { ref: f.Title, subject: cleanTopic(f.MailSubject || ""), date: f.MailDate }; });
     } catch (e) { return []; }
+  }
+  var STOP = ("the and for from with to of on in at by re fw fwd aw wg about regarding email mail test please dear kind regards our your this that are is be as an a " +
+    "\u05e9\u05dc \u05d0\u05ea \u05e2\u05dc \u05e2\u05dd \u05d0\u05dc \u05d0\u05d5 \u05d2\u05dd \u05dc\u05d0 \u05db\u05df \u05de\u05d9\u05d9\u05dc \u05e0\u05d9\u05e1\u05d9\u05d5\u05df \u05d1\u05e0\u05d5\u05e9\u05d0 \u05e2\u05d1\u05d5\u05e8 \u05dc\u05d2\u05d1\u05d9 \u05d4\u05e0\u05d3\u05d5\u05df \u05ea\u05e9\u05d5\u05d1\u05d4").split(" ");
+  function words(t) {
+    return String(t || "").toLowerCase().replace(NUM_RE_G, " ").split(/[^a-z0-9\u0590-\u05ff]+/)
+      .filter(function (w) { return w.length >= 3 && STOP.indexOf(w) < 0 && !/^\d+$/.test(w); })
+      .filter(function (w, i, a) { return a.indexOf(w) === i; });
+  }
+  /* Earlier emails with the same company whose subject shares meaningful words with the topic (max 3). */
+  function similarTo(list, topic) {
+    var tw = words(topic); if (!tw.length) return [];
+    var need = Math.min(2, tw.length);
+    return list.map(function (r) { var rw = words(r.subject); return { r: r, n: tw.filter(function (w) { return rw.indexOf(w) >= 0; }).length }; })
+      .filter(function (x) { return x.n >= need; })
+      .sort(function (a, b) { return b.n - a.n || String(b.r.date || "").localeCompare(String(a.r.date || "")); })
+      .slice(0, 3).map(function (x) { return x.r; });
   }
   function domainOf(addr) { return String(addr || "").toLowerCase().split("@")[1] || ""; }
   function codeForAddresses(addrs) {
@@ -543,6 +559,13 @@
       var next = co ? fmt(co.code, co.last + 1) : "—";
       if (co && !recentCache[co.code]) recentCache[co.code] = await recentFor(co.code);
       var recent = co ? recentCache[co.code].filter(function (r) { return !autoRefs.some(function (a) { return a.ref === r.ref; }); }) : [];
+      var simHtml = function () {
+        var topicNow = $("#topic") ? $("#topic").value : form.topic;
+        var sim = similarTo(recent, topicNow);
+        // keep anything already ticked, even if the topic changed since
+        recent.forEach(function (r) { if (form.refs.indexOf(r.ref) >= 0 && sim.indexOf(r) < 0) sim.push(r); });
+        return sim.length ? '<p class="muted" style="margin:6px 0 2px">Similar earlier emails with ' + esc(st.code) + ':</p>' + sim.map(function (r) { return refRow(r, false); }).join("") : "";
+      };
       var refRow = function (r, auto) {
         return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:3px 0"><input type="checkbox" data-ref="' + esc(r.ref) + '" data-sub="' + esc(r.subject || "") + '"' + (form.refs.indexOf(r.ref) >= 0 ? " checked" : "") + ' style="margin-top:3px">' +
           '<span><b class="mono">' + esc(r.ref) + '</b>' + (r.subject ? ' · ' + esc(r.subject) : "") + (r.date ? ' <span class="muted">· ' + esc(showDay(r.date)) + '</span>' : "") + (auto ? ' <span class="muted">(from the subject)</span>' : "") + '</span></label>';
@@ -557,7 +580,7 @@
         '<div><div class="lbl">Topic</div><input type="text" id="topic" value="' + esc(form.topic) + '" placeholder="Short topic of the email"></div>' +
         '<div><div class="lbl">References</div>' +
           autoRefs.map(function (r) { return refRow(r, true); }).join("") +
-          (recent.length ? '<p class="muted" style="margin:6px 0 2px">Recent with ' + esc(st.code) + ':</p>' + recent.map(function (r) { return refRow(r, false); }).join("") : "") +
+          '<div id="simRefs">' + simHtml() + '</div>' +
           '<input type="text" id="refExtra" style="margin-top:6px" placeholder="Other reference (optional)" value="' + esc(form.extra) + '"></div>' +
         '<label class="varbox"><input type="checkbox" id="var"' + (form.variation ? " checked" : "") + '><span><b>Track as variation</b><br><span class="muted">' +
         (hits.length ? "Keywords found: " + esc(hits.join(", ")) : "Tick if this email may support a variation request or claim.") + '</span></span></label>' +
@@ -568,6 +591,11 @@
       wireDue();
       $("#coPills").onclick = async function (e) { var b = e.target.closest("[data-co]"); if (!b) return; keep(); st.code = b.dataset.co; st.picked = true; await render(); };
       $("#insert").onclick = doInsert;
+      var simTimer = null;
+      $("#topic").addEventListener("input", function () {
+        clearTimeout(simTimer);
+        simTimer = setTimeout(function () { keep(); $("#simRefs").innerHTML = simHtml(); }, 400);
+      });
     }
 
     async function doInsert() {

@@ -5,13 +5,13 @@
            xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
            xsi:type="MailApp">
   <Id>eaed49d9-213a-4115-a0da-44be3d04bf72</Id>
-  <Version>1.0.2.0</Version>
+  <Version>1.0.2.1</Version>
   <ProviderName>Sorek Energy</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Sorek Register"/>
   <Description DefaultValue="Numbering and register of Sorek Energy project emails (SOR-SRK-RRR-NNNN)."/>
-  <IconUrl DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-64.png"/>
-  <HighResolutionIconUrl DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-128.png"/>
+  <IconUrl DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-64.png?v=2"/>
+  <HighResolutionIconUrl DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-128.png?v=2"/>
   <SupportUrl DefaultValue="https://sorek-energy.github.io/sorek-register/"/>
   <AppDomains>
     <AppDomain>https://sorek-energy.github.io</AppDomain>
@@ -120,9 +120,9 @@
       </Hosts>
       <Resources>
         <bt:Images>
-          <bt:Image id="Icon.16" DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-16.png"/>
-          <bt:Image id="Icon.32" DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-32.png"/>
-          <bt:Image id="Icon.80" DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-80.png"/>
+          <bt:Image id="Icon.16" DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-16.png?v=2"/>
+          <bt:Image id="Icon.32" DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-32.png?v=2"/>
+          <bt:Image id="Icon.80" DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-80.png?v=2"/>
         </bt:Images>
         <bt:Urls>
           <bt:Url id="Commands.Url" DefaultValue="https://sorek-energy.github.io/sorek-register/commands.html"/>
