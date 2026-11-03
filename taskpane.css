@@ -14,7 +14,7 @@ button{font:inherit;cursor:pointer}
 .btnp{border:0;border-radius:4px;padding:10px 14px;background:var(--blue);color:#fff;font-weight:600;min-height:40px;width:100%}
 .btnp[disabled]{opacity:.6;cursor:default}
 .btns{border:1px solid var(--line);border-radius:4px;padding:8px 12px;background:#fff;font-weight:600;min-height:36px}
-input[type=text],textarea{font:inherit;width:100%;padding:7px 9px;border:1px solid #c8c6c4;border-radius:4px}
+input[type=text],input[type=date],textarea{font:inherit;width:100%;padding:7px 9px;border:1px solid #c8c6c4;border-radius:4px}
 textarea{min-height:64px;resize:vertical}
 .varbox{display:flex;gap:10px;align-items:flex-start;background:var(--var-soft);border:1px solid var(--var-line);border-radius:6px;padding:10px 12px;cursor:pointer}
 .varbox b{color:var(--var)}
@@ -31,3 +31,5 @@ ul.done{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
 .msg.e{background:var(--bad)}
 .foot{padding:10px 14px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:6px}
 .foot label{display:flex;gap:6px;align-items:center}
+.coname{margin-top:8px;font-size:14px;color:var(--ink)}
+.coname b{color:var(--blue)}

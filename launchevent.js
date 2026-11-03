@@ -3,13 +3,16 @@
    without a SOR number get a reminder. The user can always choose "Send Anyway". */
 /* global Office */
 
-var SOREK_DEFAULT_NAMES = { GOV: "the State of Israel", FIC: "Fichtner", SNR: "Sener", SIE: "Siemens Energy" };
+var SOREK_DEFAULT_NAMES = { GOV: "State of Israel", FIC: "Fichtner", SNR: "SENER", SIE: "SIEMENS", ISK: "Isa Khoury", GAL: "Galil", MLK: "MELKAM" };
 
 var SOREK_DEFAULT_DOMAINS = {
   GOV: ["gov.il"],
   FIC: ["fichtner.de"],
   SNR: ["corporate.sener", "energy.sener"],
-  SIE: ["siemens-energy.com"]
+  SIE: ["siemens-energy.com"],
+  ISK: ["ikgenergy.com", "tomicic.com", "isakhoury.com", "trisak-en.com"],
+  GAL: ["galileng.com"],
+  MLK: ["melkam.co.il"]
 };
 
 function sorekAllow(event) { event.completed({ allowEvent: true }); }
