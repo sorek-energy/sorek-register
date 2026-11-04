@@ -605,10 +605,6 @@
       var rec = await findRecord({ number: num0 });
       if (rec) recordPanel(rec, [], { compose: true });
       else show('<div class="warn">This email already has the number <b class="mono">' + esc(num0) + '</b> in the subject, but it is not in the register.</div>');
-      var nw = document.createElement("div");
-      nw.innerHTML = '<p class="muted" style="margin-top:4px">A different email that only refers to ' + esc(num0) + '? <a href="#" id="newNum">Give it a new number</a> – ' + esc(num0) + ' becomes a reference.</p>';
-      $("#app").appendChild(nw);
-      $("#newNum").onclick = function (e) { e.preventDefault(); composeView(true); };
       return;
     }
     var body = await bodyText();
@@ -838,14 +834,18 @@
     var hits = scan(subject + " " + body);
     var sug = suggest(hits);
     var refs = externalRefs(subject);
-    var refText = refs.map(function (r) { return r.ref; }).join("; ");
+    // every reference number in the subject (SOR numbers of other parties included) goes to ExternalRef
+    var allRefs = [];
+    (subject.match(NUM_RE_G) || []).map(function (x) { return x.toUpperCase(); }).concat(refs.map(function (r) { return r.ref; }))
+      .forEach(function (x) { if (allRefs.indexOf(x) < 0) allRefs.push(x); });
+    var refText = allRefs.join("; ");
     var rec = await findRecord({ messageId: item.internetMessageId, number: fromUs && number && number.indexOf(C.project + "-" + C.issuer + "-") === 0 ? number : null });
     if (rec) {
       var rf = rec.fields || {};
       if (refText && !rf.ExternalRef && rf.Direction !== "Out") {
         // fill in their reference on rows logged before this feature existed
         var patch = { ExternalRef: refText };
-        if (!rf.Title || rf.Title === "(no number)") patch.Title = refs[0].ref;
+        if (!rf.Title || rf.Title === "(no number)") patch.Title = allRefs[0];
         try { await patchRegister(rec.id, patch); Object.assign(rf, patch); } catch (e) { /* column may not exist yet */ }
       }
       recordPanel(rec, hits); return;
@@ -889,7 +889,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.8</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.10</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");
