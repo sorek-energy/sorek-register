@@ -85,10 +85,24 @@
   }
 
   // Separate token for To Do tasks: never prompts, so the rest works before IT approves Tasks.ReadWrite
+  // To Do lives in the user's own organisation (Sorek, or e.g. Edeltech for guests), so ask that organisation for the token
+  function homeTenant(acc) {
+    if (!acc) return "";
+    var h = String(acc.homeAccountId || "").split(".");
+    return (h.length === 2 && h[1]) || acc.tenantId || "";
+  }
   async function taskToken() {
     var acc = pca.getActiveAccount() || pca.getAllAccounts()[0];
-    var r = await pca.acquireTokenSilent(acc ? { scopes: TASK_SCOPES, account: acc } : { scopes: TASK_SCOPES });
-    return r.accessToken;
+    var req = acc ? { scopes: TASK_SCOPES, account: acc } : { scopes: TASK_SCOPES };
+    var home = homeTenant(acc);
+    if (home && home.toLowerCase() !== String(C.tenantId).toLowerCase()) req.authority = "https://login.microsoftonline.com/" + home;
+    try { return (await pca.acquireTokenSilent(req)).accessToken; }
+    catch (e) {
+      if (!req.authority) throw e;
+      // fallback: let the sign-in library pick the user's organisation
+      req.authority = "https://login.microsoftonline.com/organizations";
+      return (await pca.acquireTokenSilent(req)).accessToken;
+    }
   }
   async function gTask(method, path, body) {
     var t = await taskToken();
@@ -896,7 +910,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.11</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.12</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");
