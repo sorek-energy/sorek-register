@@ -157,7 +157,13 @@
 
   function scan(text) {
     var t = (text || "").toLowerCase(), hits = [];
-    keywords.forEach(function (k) { if (t.indexOf(k.term.toLowerCase()) >= 0 && hits.indexOf(k.term) < 0) hits.push(k.term); });
+    keywords.forEach(function (k) {
+      var w = k.term.toLowerCase(), found;
+      // short Latin words (FAT, SAT, ITP, EOT, PPE…) only as whole words, so "satisfied" is not "SAT"
+      if (w.length <= 4 && /^[a-z0-9\/\-]+$/.test(w)) found = new RegExp("(^|[^a-z0-9])" + w.replace(/[\/\-]/g, "\\$&") + "($|[^a-z0-9])").test(t);
+      else found = t.indexOf(w) >= 0;
+      if (found && hits.indexOf(k.term) < 0) hits.push(k.term);
+    });
     return hits;
   }
   // What the keywords found suggest: Impact options to pre-tick, and whether to pre-tick Variation
@@ -253,12 +259,32 @@
       "Subject: " + topic + "\n\n";
   }
   function bodyType() { return new Promise(function (res) { item.body.getTypeAsync(function (r) { res(r.status === Office.AsyncResultStatus.Succeeded ? r.value : "html"); }); }); }
+  function withTimeout(p, ms, what) {
+    return Promise.race([p, new Promise(function (_, rej) { setTimeout(function () { rej(new Error(what + " did not answer")); }, ms); })]);
+  }
+  function oasync(fn) {
+    return new Promise(function (res, rej) { fn(function (r) { r.status === Office.AsyncResultStatus.Succeeded ? res(r.value) : rej(new Error((r.error && (r.error.message || r.error.name)) || "failed")); }); });
+  }
+  // Returns "" when added, otherwise a short reason (shown to the user)
   async function insertHeader(num, refs, topic) {
-    var html = (await bodyType()) === Office.CoercionType.Html;
-    await new Promise(function (res, rej) {
-      item.body.prependAsync(html ? headerHtml(num, refs, topic) : headerText(num, refs, topic), { coercionType: html ? Office.CoercionType.Html : Office.CoercionType.Text },
-        function (r) { r.status === Office.AsyncResultStatus.Succeeded ? res() : rej(r.error); });
-    });
+    var html = true;
+    try { html = (await withTimeout(oasync(function (cb) { item.body.getTypeAsync(cb); }), 4000, "Body type")) !== Office.CoercionType.Text; } catch (e) { html = true; }
+    var content = html ? headerHtml(num, refs, topic) : headerText(num, refs, topic);
+    var ctype = html ? Office.CoercionType.Html : Office.CoercionType.Text;
+    var why = "";
+    try {
+      await withTimeout(oasync(function (cb) { item.body.prependAsync(content, { coercionType: ctype }, cb); }), 6000, "Outlook");
+      return "";
+    } catch (e) { why = e.message; }
+    // Plan B: read the body, put the block at the top, write it back
+    try {
+      var cur = await withTimeout(oasync(function (cb) { item.body.getAsync(ctype, cb); }), 6000, "Outlook");
+      var out;
+      if (html) { var m = /<body[^>]*>/i.exec(cur); out = m ? cur.slice(0, m.index + m[0].length) + content + cur.slice(m.index + m[0].length) : content + cur; }
+      else out = content + cur;
+      await withTimeout(oasync(function (cb) { item.body.setAsync(out, { coercionType: ctype }, cb); }), 6000, "Outlook");
+      return "";
+    } catch (e2) { return why + " / " + e2.message; }
   }
   async function removeHeader(num) {
     try {
@@ -508,18 +534,22 @@
   }
 
   /* ---------- Compose ---------- */
-  async function composeView() {
+  async function composeView(forceNew) {
     var subject = await oget(item.subject);
     var to = await oget(item.to), cc = await oget(item.cc);
     var addrs = to.concat(cc).map(function (r) { return r.emailAddress; });
     var isReply = REPLY_RE.test(subject || "");
     // Already numbered by us (a new email after Insert, or a saved draft)
     var own = !isReply && (subject || "").match(new RegExp("^\\s*" + C.project + "-" + C.issuer + "-[A-Z]{3}-\\d{4}", "i"));
-    if (own) {
+    if (own && !forceNew) {
       var num0 = own[0].trim().toUpperCase();
       var rec = await findRecord({ number: num0 });
-      if (rec) { recordPanel(rec, [], { compose: true }); return; }
-      show('<div class="warn">This email already has the number <b class="mono">' + esc(num0) + '</b> in the subject, but it is not in the register.</div>');
+      if (rec) recordPanel(rec, [], { compose: true });
+      else show('<div class="warn">This email already has the number <b class="mono">' + esc(num0) + '</b> in the subject, but it is not in the register.</div>');
+      var nw = document.createElement("div");
+      nw.innerHTML = '<p class="muted" style="margin-top:4px">A different email that only refers to ' + esc(num0) + '? <a href="#" id="newNum">Give it a new number</a> – ' + esc(num0) + ' becomes a reference.</p>';
+      $("#app").appendChild(nw);
+      $("#newNum").onclick = function (e) { e.preventDefault(); composeView(true); };
       return;
     }
     var body = await bodyText();
@@ -628,18 +658,23 @@
         var all = (await oget(item.to)).concat(await oget(item.cc)).map(function (r) { return String(r.emailAddress || "").toLowerCase(); });
         var ccAdded = false;
         if (all.indexOf(C.generalMailbox.toLowerCase()) < 0) {
-          await new Promise(function (r) { item.cc.addAsync([C.generalMailbox], function () { r(); }); });
-          ccAdded = true;
+          try { await withTimeout(oasync(function (cb) { item.cc.addAsync([C.generalMailbox], cb); }), 6000, "Outlook"); ccAdded = true; } catch (e) { ccAdded = false; }
         }
-        var headerOk = true;
-        try { await insertHeader(res.num, refs, topic); } catch (e) { headerOk = false; }
+        btn.textContent = "Adding the header…";
+        var hdrWhy = "";
+        try { hdrWhy = await insertHeader(res.num, refs, topic); } catch (e) { hdrWhy = e.message; }
+        var headerOk = !hdrWhy;
         var task = null;
-        if (due) task = await createTask(res.num, topic, due, addrs);
+        if (due) {
+          btn.textContent = "Adding the reminder…";
+          try { task = await withTimeout(createTask(res.num, topic, due, addrs), 10000, "To Do"); }
+          catch (e) { task = { ok: false, msg: "Reminder not created yet – waiting for IT approval" }; }
+        }
         show(
           '<div class="ok"><b>Number inserted</b><div class="num" style="margin-top:4px">' + esc(res.num) + '</div>' + (coNameOf(st.code) ? '<p class="muted">' + esc(coNameOf(st.code)) + '</p>' : "") + '</div>' +
           '<ul class="done"><li>Number added to the subject</li>' +
-          '<li>' + (ccAdded ? "sorek@sorek.energy added to CC" : "sorek@sorek.energy already in CC") + '</li>' +
-          '<li>' + (headerOk ? "Correspondence ID" + (refs.length ? ", References" : "") + " and Subject added at the top of the email" : "The header could not be added – add it by hand if needed") + '</li>' +
+          '<li>' + (ccAdded ? "sorek@sorek.energy added to CC" : (all.indexOf(C.generalMailbox.toLowerCase()) >= 0 ? "sorek@sorek.energy already in CC" : "Could not add sorek@sorek.energy to CC – add it by hand")) + '</li>' +
+          '<li>' + (headerOk ? "Correspondence ID" + (refs.length ? ", References" : "") + " and Subject added at the top of the email" : "The header could not be added (" + esc(hdrWhy) + ")") + '</li>' +
           '<li>Logged in the register as <b>Issued</b></li>' + (form.variation ? '<li>Marked <b>Variation</b></li>' : "") +
           (form.impact.length ? '<li>Impact: ' + esc(form.impact.join(", ")) + '</li>' : "") +
           (due ? '<li>Reply expected by ' + esc(showDay(due)) + (task && task.ok ? ' – reminder in your To Do' : ' – ' + esc(task ? task.msg : "")) + '</li>' : "") + '</ul>' +
