@@ -505,7 +505,14 @@
       var same = await items("register", "Title", "fields/Title eq '" + q(num) + "'");
       if (same.length > 1) {
         var ids = same.map(function (x) { return Number(x.id); }).sort(function (a, b) { return a - b; });
-        if (Number(created.id) !== ids[0]) { await g("DELETE", listPath("register") + "/items/" + created.id); continue; }
+        if (Number(created.id) !== ids[0]) {
+          // someone took the same number at the same moment: drop our row (or, without delete rights, mark it) and try the next number
+          try { await g("DELETE", listPath("register") + "/items/" + created.id); }
+          catch (eDel) {
+            try { await patchRegister(created.id, { Title: "(duplicate) " + num, Status: "Cancelled", CancelReason: "Taken by someone else at the same moment – a new number was given" }); } catch (eP) { /* best effort */ }
+          }
+          continue;
+        }
       }
       co.last = n;
       return { num: num, id: created.id };
@@ -647,7 +654,7 @@
       var recent = co ? recentCache[co.code].filter(function (r) { return !autoRefs.concat(chainRefs).some(function (a) { return a.ref === r.ref; }); }) : [];
       var refRow = function (r, auto) {
         return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:3px 0"><input type="checkbox" data-ref="' + esc(r.ref) + '" data-sub="' + esc(r.subject || "") + '"' + (form.refs.indexOf(r.ref) >= 0 ? " checked" : "") + ' style="margin-top:3px">' +
-          '<span><b class="mono">' + esc(r.ref) + '</b>' + (r.subject ? ' · ' + esc(r.subject) : "") + (r.date ? ' <span class="muted">· ' + esc(showDay(r.date)) + '</span>' : "") + (auto ? ' <span class="muted">(from the subject)</span>' : "") + '</span></label>';
+          '<span><b class="mono">' + esc(r.ref) + '</b>' + (r.subject ? ' · <bdi>' + esc(r.subject) + '</bdi>' : "") + (r.date ? ' <span class="muted">· ' + esc(showDay(r.date)) + '</span>' : "") + (auto ? ' <span class="muted">(from the subject)</span>' : "") + '</span></label>';
       };
       var simHtml = function () {
         var topicNow = $("#topic") ? $("#topic").value : form.topic;
@@ -889,7 +896,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.10</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.11</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");
