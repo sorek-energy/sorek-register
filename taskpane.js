@@ -196,19 +196,21 @@
   function dueBlock(prefill) {
     var v = prefill ? String(prefill).slice(0, 10) : "";
     return '<div><div class="lbl">Reply expected by</div><div class="pills" id="duePills">' +
-      [["0", "None"], ["3", "3 days"], ["7", "7 days"], ["14", "14 days"]].map(function (x) {
-        return '<button class="pill" data-due="' + x[0] + '" aria-pressed="' + (x[0] === "0" && !v) + '">' + x[1] + '</button>';
-      }).join("") + '</div><input type="date" id="dueDate" style="margin-top:8px" value="' + esc(v) + '">' +
-      '<p class="muted" style="margin-top:4px">Optional. With a date, you get a reminder in your To Do on that morning.</p></div>';
+      [["0", "None"], ["3", "3 days"], ["7", "7 days"], ["14", "14 days"], ["d", "Date…"]].map(function (x) {
+        return '<button class="pill" data-due="' + x[0] + '" aria-pressed="' + ((x[0] === "0" && !v) || (x[0] === "d" && !!v)) + '">' + x[1] + '</button>';
+      }).join("") + '</div><input type="date" id="dueDate" style="margin-top:8px' + (v ? "" : ";display:none") + '" value="' + esc(v) + '">' +
+      '<p class="muted" style="margin-top:4px">Optional. With a date, you get a reminder in your To Do that morning.</p></div>';
   }
   function wireDue() {
     var p = $("#duePills"), inp = $("#dueDate"); if (!p) return;
     p.onclick = function (e) {
       var b = e.target.closest("[data-due]"); if (!b) return;
       document.querySelectorAll("#duePills .pill").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+      if (b.dataset.due === "d") { inp.style.display = ""; try { inp.showPicker(); } catch (er) { inp.focus(); } return; }
       inp.value = b.dataset.due === "0" ? "" : addDays(Number(b.dataset.due));
+      inp.style.display = b.dataset.due === "0" ? "none" : "";
     };
-    inp.onchange = function () { document.querySelectorAll("#duePills .pill").forEach(function (x) { x.setAttribute("aria-pressed", String(!inp.value && x.dataset.due === "0")); }); };
+    inp.onchange = function () { if (!inp.value) document.querySelectorAll("#duePills .pill").forEach(function (x) { x.setAttribute("aria-pressed", String(x.dataset.due === "0")); }); };
   }
   function readDue() { var i = $("#dueDate"); return i && i.value ? i.value : ""; }
   // Reminder task in the user's own Microsoft To Do (needs Tasks.ReadWrite approved by IT)
@@ -246,15 +248,16 @@
   }
   /* ---------- Header block at the top of the email body ---------- */
   function headerHtml(num, refs, topic) {
-    var td1 = 'style="padding:1px 14px 1px 0;color:#16324F;font-weight:bold;white-space:nowrap;vertical-align:top"';
-    var td2 = 'style="padding:1px 0;vertical-align:top"';
-    var rows = '<tr><td ' + td1 + '>Correspondence ID:</td><td ' + td2 + '>' + esc(num) + '</td></tr>';
+    var base = "mso-line-height-rule:exactly;line-height:13pt;font-family:Calibri,Arial,sans-serif;font-size:10.5pt;vertical-align:top;";
+    var td1 = 'style="' + base + 'padding:0 12px 0 0;color:#16324F;font-weight:bold;white-space:nowrap"';
+    var td2 = 'style="' + base + 'padding:0"';
+    var rows = num ? '<tr><td ' + td1 + '>Correspondence ID:</td><td ' + td2 + '>' + esc(num) + '</td></tr>' : "";
     if (refs.length) rows += '<tr><td ' + td1 + '>References:</td><td ' + td2 + '>' + refs.map(function (r) { return esc(r.ref) + (r.subject ? " – " + esc(r.subject) : ""); }).join("<br>") + '</td></tr>';
     rows += '<tr><td ' + td1 + '>Subject:</td><td ' + td2 + '>' + esc(topic) + '</td></tr>';
-    return '<table style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:10.5pt;margin:0 0 14px 0">' + rows + '</table><p>&nbsp;</p>';
+    return '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:0">' + rows + '</table><div style="line-height:10pt">&nbsp;</div>';
   }
   function headerText(num, refs, topic) {
-    return "Correspondence ID: " + num + "\n" +
+    return (num ? "Correspondence ID: " + num + "\n" : "") +
       (refs.length ? "References: " + refs.map(function (r) { return r.ref + (r.subject ? " – " + r.subject : ""); }).join("; ") + "\n" : "") +
       "Subject: " + topic + "\n\n";
   }
@@ -321,11 +324,35 @@
     externalRefs(String(subject || "")).forEach(function (r) { if (!seen[r.ref]) { seen[r.ref] = true; out.push(r.ref); } });
     return out;
   }
-  async function subjectOf(ref) {
+  var refInfoCache = {};
+  async function refInfo(ref) {
+    if (refInfoCache[ref]) return refInfoCache[ref];
+    var out = { subject: "", date: "", refs: [] };
     try {
-      var r = await items("register", "Title,MailSubject", "fields/Title eq '" + q(ref) + "'");
-      return r.length ? cleanTopic((r[0].fields || {}).MailSubject || "") : "";
-    } catch (e) { return ""; }
+      var r = await items("register", "Title,MailSubject,MailDate,ExternalRef", "fields/Title eq '" + q(ref) + "'");
+      if (r.length) {
+        var f = r[0].fields || {};
+        out.subject = cleanTopic(f.MailSubject || ""); out.date = f.MailDate || "";
+        out.refs = String(f.ExternalRef || "").split(/[;,]/).map(function (x) { return x.trim(); }).filter(Boolean);
+      }
+    } catch (e) { /* not found */ }
+    refInfoCache[ref] = out;
+    return out;
+  }
+  async function subjectOf(ref) { return (await refInfo(ref)).subject; }
+  // Earlier emails in the same thread: follows the References saved in the register, up to 5 back
+  async function chainOf(startRefs) {
+    var seen = startRefs.slice(), queue = startRefs.slice(), out = [];
+    while (queue.length && out.length < 5) {
+      var info = await refInfo(queue.shift());
+      for (var i = 0; i < info.refs.length && out.length < 5; i++) {
+        var x = info.refs[i]; if (seen.indexOf(x) >= 0) continue;
+        seen.push(x); queue.push(x);
+        var xi = await refInfo(x);
+        out.push({ ref: x, subject: xi.subject, date: xi.date });
+      }
+    }
+    return out;
   }
   async function recentFor(code) {
     try {
@@ -558,11 +585,12 @@
     var subjRefs = refsInSubject(subject);
     var detected = codeForAddresses(addrs);
     if (!detected && subjRefs.length) { var c0 = codeFromNumber(subjRefs[0]) || (externalRefs(subjRefs[0])[0] || {}).code; if (c0 && companies.some(function (c) { return c.code === c0; })) detected = c0; }
-    var st = { code: detected || (companies[0] && companies[0].code), picked: false };
+    var st = { code: detected || (companies[0] && companies[0].code), picked: false, showCos: false };
     var autoRefs = [];
     for (var i = 0; i < subjRefs.length && i < 5; i++) autoRefs.push({ ref: subjRefs[i], subject: await subjectOf(subjRefs[i]) });
+    var chainRefs = await chainOf(autoRefs.map(function (r) { return r.ref; }));
     var recentCache = {};
-    var form = { topic: cleanTopic(subject) || "", variation: sug.variation, impact: sug.impact, refs: autoRefs.map(function (r) { return r.ref; }), extra: "", due: "" };
+    var form = { topic: cleanTopic(subject) || "", refs: autoRefs.map(function (r) { return r.ref; }), extra: "", extraOpen: false };
 
     try {
       item.addHandlerAsync(Office.EventType.RecipientsChanged, async function () {
@@ -579,47 +607,57 @@
 
     function keep() {
       if (!$("#topic")) return;
-      form.topic = $("#topic").value; form.variation = $("#var").checked; form.impact = readImpact();
+      form.topic = $("#topic").value;
       form.refs = Array.prototype.slice.call(document.querySelectorAll("[data-ref]")).filter(function (c) { return c.checked; }).map(function (c) { return c.dataset.ref; });
-      form.extra = $("#refExtra").value; form.due = readDue();
+      if ($("#refExtra")) form.extra = $("#refExtra").value;
     }
 
     async function render() {
       var co = companies.find(function (c) { return c.code === st.code; });
       var next = co ? fmt(co.code, co.last + 1) : "—";
       if (co && !recentCache[co.code]) recentCache[co.code] = await recentFor(co.code);
-      var recent = co ? recentCache[co.code].filter(function (r) { return !autoRefs.some(function (a) { return a.ref === r.ref; }); }) : [];
-      var simHtml = function () {
-        var topicNow = $("#topic") ? $("#topic").value : form.topic;
-        var sim = similarTo(recent, topicNow);
-        // keep anything already ticked, even if the topic changed since
-        recent.forEach(function (r) { if (form.refs.indexOf(r.ref) >= 0 && sim.indexOf(r) < 0) sim.push(r); });
-        return sim.length ? '<p class="muted" style="margin:6px 0 2px">Similar earlier emails with ' + esc(st.code) + ':</p>' + sim.map(function (r) { return refRow(r, false); }).join("") : "";
-      };
+      var recent = co ? recentCache[co.code].filter(function (r) { return !autoRefs.concat(chainRefs).some(function (a) { return a.ref === r.ref; }); }) : [];
       var refRow = function (r, auto) {
         return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:3px 0"><input type="checkbox" data-ref="' + esc(r.ref) + '" data-sub="' + esc(r.subject || "") + '"' + (form.refs.indexOf(r.ref) >= 0 ? " checked" : "") + ' style="margin-top:3px">' +
           '<span><b class="mono">' + esc(r.ref) + '</b>' + (r.subject ? ' · ' + esc(r.subject) : "") + (r.date ? ' <span class="muted">· ' + esc(showDay(r.date)) + '</span>' : "") + (auto ? ' <span class="muted">(from the subject)</span>' : "") + '</span></label>';
       };
+      var simHtml = function () {
+        var topicNow = $("#topic") ? $("#topic").value : form.topic;
+        var sim = similarTo(recent, topicNow);
+        recent.forEach(function (r) { if (form.refs.indexOf(r.ref) >= 0 && sim.indexOf(r) < 0) sim.push(r); });
+        return sim.length ? '<p class="muted" style="margin:6px 0 2px">Similar earlier emails with ' + esc(st.code) + ':</p>' + sim.map(function (r) { return refRow(r, false); }).join("") : "";
+      };
+      var showPills = !co || !detected || st.showCos;
+      var hasRefs = autoRefs.length || chainRefs.length;
       show(
-        (isReply ? '<div class="note" style="background:var(--blue-soft);border-radius:6px;padding:10px 12px;font-size:13px">Reply – a number is optional. References are filled in from the original email.</div>' : "") +
-        (addrs.length ? "" : '<div class="warn">No recipients yet. Add them first, so the company is detected and the recipients are recorded.</div>') +
-        '<div><div class="lbl">Recipient' + (detected ? " · detected" : "") + '</div><div class="pills" id="coPills">' +
-        companies.map(function (c) { return '<button class="pill" data-co="' + esc(c.code) + '" aria-pressed="' + (c.code === st.code) + '" title="' + esc(c.name) + '">' + esc(c.code) + '</button>'; }).join("") + '</div>' +
-        (co ? '<div class="coname"><b>' + esc(co.code) + '</b> – ' + esc(co.name || co.code) + '</div>' : "") + '</div>' +
-        '<div><div class="lbl">Next number</div><div class="num">' + esc(next) + '</div><p class="muted">Taken only when you click Insert. If someone else takes it first, you get the next one.</p></div>' +
+        (isReply ? '<div class="note" style="background:var(--blue-soft);border-radius:6px;padding:8px 12px;font-size:13px">Reply – a number is optional.</div>' : "") +
+        (addrs.length ? "" : '<div class="warn">Add the recipients first, so the company is detected.</div>') +
+        '<div><div class="lbl">To</div>' +
+          (co ? '<div class="coname" style="margin-top:0"><b>' + esc(co.code) + '</b> – ' + esc(co.name || co.code) + (showPills ? "" : ' <a href="#" id="coChange" style="font-size:12px;margin-left:6px">change</a>') + '</div>' : "") +
+          (showPills ? '<div class="pills" id="coPills" style="margin-top:8px">' + companies.map(function (c) { return '<button class="pill" data-co="' + esc(c.code) + '" aria-pressed="' + (c.code === st.code) + '" title="' + esc(c.name) + '">' + esc(c.code) + '</button>'; }).join("") + '</div>' : "") +
+        '</div>' +
+        '<div><div class="lbl">Number</div><div class="num">' + esc(next) + '</div></div>' +
         '<div><div class="lbl">Topic</div><input type="text" id="topic" value="' + esc(form.topic) + '" placeholder="Short topic of the email"></div>' +
-        '<div><div class="lbl">References</div>' +
+        '<div>' + (hasRefs ? '<div class="lbl">References</div>' : "") +
           autoRefs.map(function (r) { return refRow(r, true); }).join("") +
+          (chainRefs.length ? '<p class="muted" style="margin:6px 0 2px">Earlier in this thread:</p>' + chainRefs.map(function (r) { return refRow(r, false); }).join("") : "") +
           '<div id="simRefs">' + simHtml() + '</div>' +
-          '<input type="text" id="refExtra" style="margin-top:6px" placeholder="Other reference (optional)" value="' + esc(form.extra) + '"></div>' +
-        '<label class="varbox"><input type="checkbox" id="var"' + (form.variation ? " checked" : "") + '><span><b>Track as variation</b><br><span class="muted">' +
-        (hits.length ? "Keywords found: " + esc(hits.join(", ")) : "Tick if this email may support a variation request or claim.") + '</span></span></label>' +
-        impactChecks(form.impact) +
-        (regCols && !regCols.DueDate ? "" : dueBlock(form.due)) +
-        '<button class="btnp" id="insert"' + (co ? "" : " disabled") + '>Insert number</button>'
+          (form.extraOpen || form.extra ? '<input type="text" id="refExtra" style="margin-top:6px" placeholder="Other reference (optional)" value="' + esc(form.extra) + '">'
+            : '<p style="margin:4px 0 0;font-size:13px"><a href="#" id="addRef">+ Add reference</a></p>') +
+        '</div>' +
+        '<button class="btnp" id="insert"' + (co ? "" : " disabled") + '>Insert number</button>' +
+        (isReply ? '<button class="btns" id="hdrOnly" style="width:100%">Add header only (no number)</button><p class="muted" style="margin-top:-8px">Adds References and Subject at the top. Not logged in the register.</p>' : "")
       );
-      wireDue();
-      $("#coPills").onclick = async function (e) { var b = e.target.closest("[data-co]"); if (!b) return; keep(); st.code = b.dataset.co; st.picked = true; await render(); };
+      if ($("#hdrOnly")) $("#hdrOnly").onclick = async function () {
+        keep();
+        var b = $("#hdrOnly"); b.disabled = true; b.textContent = "Adding…";
+        var why = await insertHeader(null, pickedRefs(), form.topic.trim() || cleanTopic(subject));
+        toast(why ? "The header could not be added (" + why + ")" : "Header added at the top of the email", !!why);
+        b.disabled = false; b.textContent = "Add header only (no number)";
+      };
+      if ($("#coChange")) $("#coChange").onclick = async function (e) { e.preventDefault(); keep(); st.showCos = true; await render(); };
+      if ($("#coPills")) $("#coPills").onclick = async function (e) { var b = e.target.closest("[data-co]"); if (!b) return; keep(); st.code = b.dataset.co; st.picked = true; st.showCos = false; detected = detected || b.dataset.co; await render(); };
+      if ($("#addRef")) $("#addRef").onclick = async function (e) { e.preventDefault(); keep(); form.extraOpen = true; await render(); $("#refExtra").focus(); };
       $("#insert").onclick = doInsert;
       var simTimer = null;
       $("#topic").addEventListener("input", function () {
@@ -628,26 +666,28 @@
       });
     }
 
+    function pickedRefs() {
+      var refs = Array.prototype.slice.call(document.querySelectorAll("[data-ref]")).filter(function (c) { return c.checked; })
+        .map(function (c) { return { ref: c.dataset.ref, subject: c.dataset.sub }; });
+      String(form.extra || "").split(/[;,]/).map(function (x) { return x.trim(); }).filter(Boolean).forEach(function (x) { refs.push({ ref: x, subject: "" }); });
+      return refs;
+    }
+
     async function doInsert() {
       keep();
       var btn = $("#insert"); btn.disabled = true; btn.textContent = "Getting number…";
       var topic = form.topic.trim() || "Topic";
-      var refs = Array.prototype.slice.call(document.querySelectorAll("[data-ref]")).filter(function (c) { return c.checked; })
-        .map(function (c) { return { ref: c.dataset.ref, subject: c.dataset.sub }; });
-      form.extra.split(/[;,]/).map(function (x) { return x.trim(); }).filter(Boolean).forEach(function (x) { refs.push({ ref: x, subject: "" }); });
-      var due = form.due;
+      var refs = pickedRefs();
       try {
         addrs = (await oget(item.to)).concat(await oget(item.cc)).map(function (r) { return r.emailAddress; });
         var res = await reserve(st.code, function (num) {
-          var fl = {
+          return {
             Direction: "Out", Company: companyChoice(st.code), MailSubject: num + "_" + topic, MailDate: new Date().toISOString(),
-            Status: "Issued", Variation: form.variation, Keywords: hits.join(", "),
+            Status: "Issued", Variation: sug.variation, Keywords: hits.join(", "),
             Sender: (Office.context.mailbox.userProfile || {}).emailAddress || "", Recipients: addrs.join("; "),
             ExternalRef: refs.map(function (r) { return r.ref; }).join("; "),
-            "Impact@odata.type": "Collection(Edm.String)", Impact: form.impact
+            "Impact@odata.type": "Collection(Edm.String)", Impact: sug.impact
           };
-          if (due) fl.DueDate = due + "T12:00:00Z";
-          return fl;
         });
         try { await oset(item.subject, res.num + "_" + topic); }
         catch (err) {
@@ -663,26 +703,52 @@
         btn.textContent = "Adding the header…";
         var hdrWhy = "";
         try { hdrWhy = await insertHeader(res.num, refs, topic); } catch (e) { hdrWhy = e.message; }
-        var headerOk = !hdrWhy;
-        var task = null;
-        if (due) {
-          btn.textContent = "Adding the reminder…";
-          try { task = await withTimeout(createTask(res.num, topic, due, addrs), 10000, "To Do"); }
-          catch (e) { task = { ok: false, msg: "Reminder not created yet – waiting for IT approval" }; }
-        }
+        var ccLine = ccAdded ? "sorek@ added to CC" : (all.indexOf(C.generalMailbox.toLowerCase()) >= 0 ? "sorek@ already in CC" : "Could not add sorek@sorek.energy to CC – add it by hand");
         show(
-          '<div class="ok"><b>Number inserted</b><div class="num" style="margin-top:4px">' + esc(res.num) + '</div>' + (coNameOf(st.code) ? '<p class="muted">' + esc(coNameOf(st.code)) + '</p>' : "") + '</div>' +
-          '<ul class="done"><li>Number added to the subject</li>' +
-          '<li>' + (ccAdded ? "sorek@sorek.energy added to CC" : (all.indexOf(C.generalMailbox.toLowerCase()) >= 0 ? "sorek@sorek.energy already in CC" : "Could not add sorek@sorek.energy to CC – add it by hand")) + '</li>' +
-          '<li>' + (headerOk ? "Correspondence ID" + (refs.length ? ", References" : "") + " and Subject added at the top of the email" : "The header could not be added (" + esc(hdrWhy) + ")") + '</li>' +
-          '<li>Logged in the register as <b>Issued</b></li>' + (form.variation ? '<li>Marked <b>Variation</b></li>' : "") +
-          (form.impact.length ? '<li>Impact: ' + esc(form.impact.join(", ")) + '</li>' : "") +
-          (due ? '<li>Reply expected by ' + esc(showDay(due)) + (task && task.ok ? ' – reminder in your To Do' : ' – ' + esc(task ? task.msg : "")) + '</li>' : "") + '</ul>' +
+          '<div class="ok"><b>Number inserted</b><div class="num" style="margin-top:4px">' + esc(res.num) + '</div>' +
+            '<p class="muted" style="margin-top:4px">Added to the subject' + (hdrWhy ? "" : " and the top of the email") + '. Logged in the register.</p>' +
+            (ccAdded || all.indexOf(C.generalMailbox.toLowerCase()) >= 0 ? "" : '<p class="muted" style="color:var(--bad)">' + esc(ccLine) + '</p>') +
+            (hdrWhy ? '<p class="muted" style="color:var(--bad)">The header could not be added (' + esc(hdrWhy) + ')</p>' : "") + '</div>' +
+          '<div><div class="lbl">For the claims register <span style="text-transform:none;letter-spacing:0;font-weight:400">· optional, saved as you click</span></div>' +
+            '<label class="varbox"><input type="checkbox" id="var"' + (sug.variation ? " checked" : "") + '><span><b>Track as variation</b><br><span class="muted">' +
+              (hits.length ? "Keywords found: " + esc(hits.join(", ")) : "Tick if this email may support a variation request or claim.") + '</span></span></label>' +
+            '<div style="margin-top:10px">' + impactChecks(sug.impact) + '</div>' +
+          '</div>' +
+          (regCols && !regCols.DueDate ? "" : dueBlock("")) +
           '<p class="muted">Finish the email and click Send as usual.</p>' +
-          '<div class="warn" id="relBox">Not sending this email after all? <button class="btns" id="relBtn" style="margin-top:8px;width:100%">Release number</button><span class="muted" style="display:block;margin-top:6px">The number is marked Cancelled in the register and removed from the email. Cancelled numbers are not reused.</span></div>'
+          '<div class="warn" id="relBox">Not sending this email after all? <button class="btns" id="relBtn" style="margin-top:8px;width:100%">Release number</button><span class="muted" style="display:block;margin-top:6px">Marked Cancelled in the register and removed from the email. Cancelled numbers are not reused.</span></div>'
         );
         $("#relBtn").onclick = function () { askRelease(res.id, res.num, ccAdded); };
         try { item.notificationMessages.removeAsync("sorekHint", function () {}); } catch (e) { /* none */ }
+
+        // auto-save the claims fields
+        var saveTimer = null;
+        var saveClaims = function () {
+          clearTimeout(saveTimer);
+          saveTimer = setTimeout(async function () {
+            try { await patchRegister(res.id, { Variation: $("#var").checked, "Impact@odata.type": "Collection(Edm.String)", Impact: readImpact() }); toast("Saved"); }
+            catch (e) { toast("Not saved: " + e.message, true); }
+          }, 500);
+        };
+        $("#var").onchange = saveClaims;
+        document.querySelectorAll("[data-imp]").forEach(function (c) { c.onchange = saveClaims; });
+        // auto-save the reply date (+ To Do reminder)
+        wireDue();
+        var dueSaved = "";
+        var saveDue = async function () {
+          var due = readDue(); if (due === dueSaved) return;
+          try {
+            await patchRegister(res.id, { DueDate: due ? due + "T12:00:00Z" : null });
+            if (dueSaved) { try { await withTimeout(deleteTask(res.num), 8000, "To Do"); } catch (e) { /* ignore */ } }
+            dueSaved = due;
+            if (!due) { toast("Reply date removed"); return; }
+            var t = null;
+            try { t = await withTimeout(createTask(res.num, topic, due, addrs), 10000, "To Do"); } catch (e) { t = { ok: false, msg: "Reminder not created yet – waiting for IT approval" }; }
+            toast("Reply expected by " + showDay(due) + (t.ok ? " · reminder in your To Do" : " · " + t.msg));
+          } catch (e) { toast("Not saved: " + e.message, true); }
+        };
+        if ($("#duePills")) $("#duePills").addEventListener("click", function () { setTimeout(saveDue, 0); });
+        if ($("#dueDate")) $("#dueDate").addEventListener("change", saveDue);
       } catch (e) {
         toast("The number was not inserted: " + e.message, true);
         btn.disabled = false; btn.textContent = "Insert number";
@@ -787,9 +853,12 @@
     var rs = roam();
     var on = !(rs && rs.get("sorReminder") === false);
     var barOn = !(rs && rs.get("sorBar") === false);
-    $("#foot").innerHTML = (compose ? '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
-      '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + '</span>';
+    $("#foot").innerHTML = (compose ? '<a href="#" id="setTgl">Settings</a><div id="setBox" hidden style="display:flex;flex-direction:column;gap:6px">' +
+      '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
+      '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label></div>' : "") +
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.6</span>';
+    if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
+    if ($("#setBox")) $("#setBox").style.display = "none";
     var r = $("#remind");
     if (r) r.onchange = function () { if (rs) { rs.set("sorReminder", r.checked); saveRoam(); toast(r.checked ? "Send reminder on" : "Send reminder off"); } };
     var bt = $("#barTgl");
