@@ -268,44 +268,69 @@
   function oasync(fn) {
     return new Promise(function (res, rej) { fn(function (r) { r.status === Office.AsyncResultStatus.Succeeded ? res(r.value) : rej(new Error((r.error && (r.error.message || r.error.name)) || "failed")); }); });
   }
-  // Returns "" when added, otherwise a short reason (shown to the user)
+  /* Find our header block (not the one quoted from an earlier email). Returns {a, b} or null. */
+  function findHeader(cur, html, num) {
+    var limit = cur.search(/From:/); if (limit < 0) limit = cur.length;
+    var m = cur.indexOf("Correspondence ID");
+    if (num) { if (m < 0 || m > limit || cur.indexOf(num, m) < 0 || cur.indexOf(num, m) - m > 1500) return null; }
+    else {
+      if (m < 0 || m > limit) m = cur.indexOf("References");
+      if (m < 0 || m > limit || cur.indexOf("Subject", m) < 0) return null;
+    }
+    if (!html) {
+      var e = cur.indexOf("Subject:", m), nl = e >= 0 ? cur.indexOf("\n", e) : -1;
+      if (nl < 0) return null;
+      var st = cur.lastIndexOf("\n", m) + 1;
+      var end = nl + 1; if (cur.charAt(end) === "\n") end++;
+      return { a: st, b: end };
+    }
+    // outermost <table> around the marker, matched by depth (handles nested tables)
+    var re = /<\/?table\b[^>]*>/gi, t, stack = [];
+    while ((t = re.exec(cur)) && t.index < m) {
+      if (t[0].charAt(1) === "/") stack.pop(); else stack.push(t.index);
+    }
+    if (!stack.length) return null;
+    var outer = stack[0], depth = stack.length;
+    re.lastIndex = m;
+    while ((t = re.exec(cur))) {
+      if (t[0].charAt(1) === "/") { depth--; if (depth === 0) return { a: outer, b: t.index + t[0].length }; }
+      else depth++;
+    }
+    return null;
+  }
+  // Returns "" when added, otherwise a short reason (shown to the user). Replaces a header that is already there.
   async function insertHeader(num, refs, topic) {
     var html = true;
     try { html = (await withTimeout(oasync(function (cb) { item.body.getTypeAsync(cb); }), 4000, "Body type")) !== Office.CoercionType.Text; } catch (e) { html = true; }
     var content = html ? headerHtml(num, refs, topic) : headerText(num, refs, topic);
     var ctype = html ? Office.CoercionType.Html : Office.CoercionType.Text;
-    var why = "";
+    var cur = null, why = "";
+    try { cur = await withTimeout(oasync(function (cb) { item.body.getAsync(ctype, cb); }), 6000, "Outlook"); } catch (e) { cur = null; why = e.message; }
+    var old = cur != null ? findHeader(cur, html, null) : null;
+    if (!old) {
+      try {
+        await withTimeout(oasync(function (cb) { item.body.prependAsync(content, { coercionType: ctype }, cb); }), 6000, "Outlook");
+        return "";
+      } catch (e) { why = e.message; }
+    }
+    // Replace the old block, or put the new one at the top, and write the body back
     try {
-      await withTimeout(oasync(function (cb) { item.body.prependAsync(content, { coercionType: ctype }, cb); }), 6000, "Outlook");
-      return "";
-    } catch (e) { why = e.message; }
-    // Plan B: read the body, put the block at the top, write it back
-    try {
-      var cur = await withTimeout(oasync(function (cb) { item.body.getAsync(ctype, cb); }), 6000, "Outlook");
+      if (cur == null) cur = await withTimeout(oasync(function (cb) { item.body.getAsync(ctype, cb); }), 6000, "Outlook");
       var out;
-      if (html) { var m = /<body[^>]*>/i.exec(cur); out = m ? cur.slice(0, m.index + m[0].length) + content + cur.slice(m.index + m[0].length) : content + cur; }
+      if (old) out = cur.slice(0, old.a) + content + cur.slice(old.b);
+      else if (html) { var bm = /<body[^>]*>/i.exec(cur); out = bm ? cur.slice(0, bm.index + bm[0].length) + content + cur.slice(bm.index + bm[0].length) : content + cur; }
       else out = content + cur;
       await withTimeout(oasync(function (cb) { item.body.setAsync(out, { coercionType: ctype }, cb); }), 6000, "Outlook");
       return "";
-    } catch (e2) { return why + " / " + e2.message; }
+    } catch (e2) { return (why ? why + " / " : "") + e2.message; }
   }
   async function removeHeader(num) {
     try {
       var html = (await bodyType()) === Office.CoercionType.Html;
-      var cur = await new Promise(function (res, rej) { item.body.getAsync(html ? Office.CoercionType.Html : Office.CoercionType.Text, function (r) { r.status === Office.AsyncResultStatus.Succeeded ? res(r.value || "") : rej(r.error); }); });
-      var at = cur.indexOf("Correspondence ID");
-      if (at < 0 || cur.indexOf(num, at) < 0 || cur.indexOf(num, at) - at > 800) return false;
-      var out;
-      if (html) {
-        var a = cur.lastIndexOf("<table", at), b = cur.indexOf("</table>", at);
-        if (a < 0 || b < 0) return false;
-        out = cur.slice(0, a) + cur.slice(b + 8);
-      } else {
-        var e = cur.indexOf("Subject:", at); var nl = e >= 0 ? cur.indexOf("\n", e) : -1;
-        if (nl < 0) return false;
-        out = cur.slice(0, at) + cur.slice(nl + 1).replace(/^\n/, "");
-      }
-      await new Promise(function (res, rej) { item.body.setAsync(out, { coercionType: html ? Office.CoercionType.Html : Office.CoercionType.Text }, function (r) { r.status === Office.AsyncResultStatus.Succeeded ? res() : rej(r.error); }); });
+      var ctype = html ? Office.CoercionType.Html : Office.CoercionType.Text;
+      var cur = await withTimeout(oasync(function (cb) { item.body.getAsync(ctype, cb); }), 6000, "Outlook");
+      var h = findHeader(cur, html, num); if (!h) return false;
+      await withTimeout(oasync(function (cb) { item.body.setAsync(cur.slice(0, h.a) + cur.slice(h.b), { coercionType: ctype }, cb); }), 6000, "Outlook");
       return true;
     } catch (e) { return false; }
   }
@@ -856,7 +881,7 @@
     $("#foot").innerHTML = (compose ? '<a href="#" id="setTgl">Settings</a><div id="setBox" hidden style="display:flex;flex-direction:column;gap:6px">' +
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.6</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.7</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var r = $("#remind");
