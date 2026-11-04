@@ -140,7 +140,51 @@ function onRecipientsChangedHandler(event) {
   } catch (e) { finish(); }
 }
 
+/* Reply / Reply All / Forward to an email with a SOR number: add References + Subject at the top automatically.
+   No new number is taken. Turn off in the pane: Settings > Add the header to replies and forwards automatically. */
+var SOREK_REPLY_RE = /^\s*(re|fw|fwd|aw|wg|תשובה|השב|הועבר)\s*:/i;
+function sorekEsc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+function sorekTopic(subject) {
+  var s = String(subject || "");
+  for (var i = 0; i < 5; i++) s = s.replace(SOREK_REPLY_RE, "").trim();
+  s = s.replace(/SOR-[A-Z]{3}-[A-Z]{3}-\d{4}/gi, " ");
+  for (var j = 0; j < 5; j++) s = s.replace(SOREK_REPLY_RE, "").trim();
+  return s.replace(/\s{2,}/g, " ").replace(/^[\s\-_–:]+|[\s\-_–:]+$/g, "").trim();
+}
+function sorekHeaderHtml(refs, topic) {
+  var base = "mso-line-height-rule:exactly;line-height:13pt;font-family:Calibri,Arial,sans-serif;font-size:10.5pt;vertical-align:top;";
+  var td1 = 'style="' + base + 'padding:0 12px 0 0;color:#16324F;font-weight:bold;white-space:nowrap"';
+  var td2 = 'style="' + base + 'padding:0"';
+  return '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:0">' +
+    '<tr><td ' + td1 + '>References:</td><td ' + td2 + '>' + refs.map(function (r) { return sorekEsc(r) + (topic ? " – " + sorekEsc(topic) : ""); }).join("<br>") + '</td></tr>' +
+    '<tr><td ' + td1 + '>Subject:</td><td ' + td2 + '>' + sorekEsc(topic) + '</td></tr></table><div style="line-height:10pt">&nbsp;</div>';
+}
+function onNewComposeHandler(event) {
+  var finish = function () { try { event.completed(); } catch (e) { /* ignore */ } };
+  try {
+    var item = Office.context.mailbox.item;
+    var rs = null;
+    try { rs = Office.context.roamingSettings; } catch (e) { rs = null; }
+    if (rs && rs.get("sorAutoHdr") === false) { finish(); return; }
+    item.subject.getAsync(function (sr) {
+      var subject = (sr && sr.value) || "";
+      if (!SOREK_REPLY_RE.test(subject)) { finish(); return; }
+      var refs = [], m, re = /SOR-[A-Z]{3}-[A-Z]{3}-\d{4}/gi;
+      while ((m = re.exec(subject))) { var r = m[0].toUpperCase(); if (refs.indexOf(r) < 0) refs.push(r); }
+      if (!refs.length) { finish(); return; }
+      var topic = sorekTopic(subject);
+      item.body.getTypeAsync(function (tr) {
+        var html = !(tr && tr.status === Office.AsyncResultStatus.Succeeded && tr.value === Office.CoercionType.Text);
+        var content = html ? sorekHeaderHtml(refs, topic)
+          : "References: " + refs.map(function (r) { return r + (topic ? " – " + topic : ""); }).join("; ") + "\nSubject: " + topic + "\n\n";
+        item.body.prependAsync(content, { coercionType: html ? Office.CoercionType.Html : Office.CoercionType.Text }, function () { finish(); });
+      });
+    });
+  } catch (e) { finish(); }
+}
+
 if (typeof Office !== "undefined" && Office.actions && Office.actions.associate) {
   Office.actions.associate("onMessageSendHandler", onMessageSendHandler);
   Office.actions.associate("onRecipientsChangedHandler", onRecipientsChangedHandler);
+  Office.actions.associate("onNewComposeHandler", onNewComposeHandler);
 }

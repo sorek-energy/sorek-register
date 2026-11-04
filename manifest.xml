@@ -5,7 +5,7 @@
            xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
            xsi:type="MailApp">
   <Id>eaed49d9-213a-4115-a0da-44be3d04bf72</Id>
-  <Version>1.0.2.1</Version>
+  <Version>1.0.3.0</Version>
   <ProviderName>Sorek Energy</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Sorek Register"/>
@@ -112,6 +112,7 @@
               <LaunchEvents>
                 <LaunchEvent Type="OnMessageSend" FunctionName="onMessageSendHandler" SendMode="PromptUser"/>
                 <LaunchEvent Type="OnMessageRecipientsChanged" FunctionName="onRecipientsChangedHandler"/>
+                <LaunchEvent Type="OnNewMessageCompose" FunctionName="onNewComposeHandler"/>
               </LaunchEvents>
               <SourceLocation resid="WebViewRuntime.Url"/>
             </ExtensionPoint>
@@ -125,10 +126,10 @@
           <bt:Image id="Icon.80" DefaultValue="https://sorek-energy.github.io/sorek-register/assets/icon-80.png?v=2"/>
         </bt:Images>
         <bt:Urls>
-          <bt:Url id="Commands.Url" DefaultValue="https://sorek-energy.github.io/sorek-register/commands.html"/>
+          <bt:Url id="Commands.Url" DefaultValue="https://sorek-energy.github.io/sorek-register/commands.html?v=3"/>
           <bt:Url id="Taskpane.Url" DefaultValue="https://sorek-energy.github.io/sorek-register/taskpane.html"/>
-          <bt:Url id="WebViewRuntime.Url" DefaultValue="https://sorek-energy.github.io/sorek-register/commands.html"/>
-          <bt:Url id="JSRuntime.Url" DefaultValue="https://sorek-energy.github.io/sorek-register/launchevent.js"/>
+          <bt:Url id="WebViewRuntime.Url" DefaultValue="https://sorek-energy.github.io/sorek-register/commands.html?v=3"/>
+          <bt:Url id="JSRuntime.Url" DefaultValue="https://sorek-energy.github.io/sorek-register/launchevent.js?v=3"/>
         </bt:Urls>
         <bt:ShortStrings>
           <bt:String id="Group.Label" DefaultValue="Sorek"/>

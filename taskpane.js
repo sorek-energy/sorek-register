@@ -293,7 +293,14 @@
     var outer = stack[0], depth = stack.length;
     re.lastIndex = m;
     while ((t = re.exec(cur))) {
-      if (t[0].charAt(1) === "/") { depth--; if (depth === 0) return { a: outer, b: t.index + t[0].length }; }
+      if (t[0].charAt(1) === "/") {
+        depth--;
+        if (depth === 0) {
+          var endAt = t.index + t[0].length;
+          var sp = /^\s*<(div|p)\b[^>]*>(\s|&nbsp;|<o:p>|<\/o:p>)*<\/(div|p)>/i.exec(cur.slice(endAt));
+          return { a: outer, b: endAt + (sp ? sp[0].length : 0) };
+        }
+      }
       else depth++;
     }
     return null;
@@ -880,10 +887,13 @@
     var barOn = !(rs && rs.get("sorBar") === false);
     $("#foot").innerHTML = (compose ? '<a href="#" id="setTgl">Settings</a><div id="setBox" hidden style="display:flex;flex-direction:column;gap:6px">' +
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
-      '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.7</span>';
+      '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
+      '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.8</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
+    var ht = $("#hdrTgl");
+    if (ht) ht.onchange = function () { if (rs) { rs.set("sorAutoHdr", ht.checked); saveRoam(); toast(ht.checked ? "Header on replies on" : "Header on replies off"); } };
     var r = $("#remind");
     if (r) r.onchange = function () { if (rs) { rs.set("sorReminder", r.checked); saveRoam(); toast(r.checked ? "Send reminder on" : "Send reminder off"); } };
     var bt = $("#barTgl");
