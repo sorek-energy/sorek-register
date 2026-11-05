@@ -850,7 +850,12 @@
   async function readView() {
     var subject = item.subject || "";
     var from = (item.from && item.from.emailAddress) || "";
-    var fromUs = isOwnDomain(domainOf(from));
+    var fromName = (item.from && item.from.displayName) || "";
+    // Colleagues in the same organisation may come through as an internal Exchange address (no "@"): that is one of us
+    var internal = !!from && from.indexOf("@") < 0;
+    var fromUs = internal || isOwnDomain(domainOf(from));
+    var fromShown = internal ? (fromName || "colleague") + " (internal address)" : from;
+    var addrOf = function (r) { var a = r.emailAddress || ""; return a.indexOf("@") >= 0 ? a : (r.displayName || a); };
     var m = subject.match(NUM_RE);
     var number = m ? m[0].toUpperCase() : null;
     var body = await bodyText();
@@ -875,6 +880,7 @@
     }
 
     var recips = (item.to || []).concat(item.cc || []).map(function (r) { return r.emailAddress; });
+    var recipsShown = (item.to || []).concat(item.cc || []).map(addrOf);
     var dir = fromUs ? "Out" : "In";
     // Incoming: the company is whoever sent it (the number in the subject may belong to someone else in the thread)
     var code = fromUs
@@ -882,6 +888,7 @@
       : (codeForAddresses([from]) || (number && codeFromNumber(number)) || (refs[0] && refs[0].code) || null);
     show(
       '<div class="warn"><b>Not in the register yet.</b><br><span class="muted">' + (dir === "In" ? "Incoming" : "Outgoing") + (code ? " · " + esc(code) : "") + (number ? " · ref " + esc(number) : "") + '</span>' +
+      '<div class="muted" style="margin-top:4px;font-size:12px;word-break:break-all">From: ' + esc(fromShown) + '</div>' +
       (refs.length ? '<div style="margin-top:6px;font-size:13px">Their ref: <b class="mono">' + esc(refs[0].ref) + '</b>' + (refs.length > 1 ? '<br><span class="muted">Refers to: ' + esc(refs.slice(1).map(function (r) { return r.ref; }).join(", ")) + '</span>' : "") + '</div>' : "") +
       '</div>' +
       (hits.length ? '<div><div class="lbl">Keywords found</div>' + hits.map(function (k) { return '<span class="kw">' + esc(k) + '</span>'; }).join("") + '</div>' : "") +
@@ -897,7 +904,7 @@
           MailSubject: subject, MailDate: (item.dateTimeCreated ? new Date(item.dateTimeCreated) : new Date()).toISOString(),
           Status: "Logged", Variation: $("#var").checked, Keywords: hits.join(", "),
           "Impact@odata.type": "Collection(Edm.String)", Impact: readImpact(),
-          Sender: from, Recipients: recips.join("; "), MessageId: item.internetMessageId || ""
+          Sender: internal ? (fromName || from) : from, Recipients: recipsShown.join("; "), MessageId: item.internetMessageId || ""
         });
         var fresh = await g("GET", listPath("register") + "/items/" + created.id + "?$expand=fields");
         toast("Logged in the register");
@@ -915,7 +922,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.14</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.15</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");
