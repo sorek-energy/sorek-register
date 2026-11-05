@@ -876,7 +876,10 @@
 
     var recips = (item.to || []).concat(item.cc || []).map(function (r) { return r.emailAddress; });
     var dir = fromUs ? "Out" : "In";
-    var code = (number && codeFromNumber(number)) || (fromUs ? codeForAddresses(recips) : codeForAddresses([from])) || (refs[0] && refs[0].code) || null;
+    // Incoming: the company is whoever sent it (the number in the subject may belong to someone else in the thread)
+    var code = fromUs
+      ? ((number && codeFromNumber(number)) || codeForAddresses(recips) || (refs[0] && refs[0].code) || null)
+      : (codeForAddresses([from]) || (number && codeFromNumber(number)) || (refs[0] && refs[0].code) || null);
     show(
       '<div class="warn"><b>Not in the register yet.</b><br><span class="muted">' + (dir === "In" ? "Incoming" : "Outgoing") + (code ? " · " + esc(code) : "") + (number ? " · ref " + esc(number) : "") + '</span>' +
       (refs.length ? '<div style="margin-top:6px;font-size:13px">Their ref: <b class="mono">' + esc(refs[0].ref) + '</b>' + (refs.length > 1 ? '<br><span class="muted">Refers to: ' + esc(refs.slice(1).map(function (r) { return r.ref; }).join(", ")) + '</span>' : "") + '</div>' : "") +
@@ -912,7 +915,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.13</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.14</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");
