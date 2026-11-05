@@ -8,7 +8,8 @@ window.SOREK_CONFIG = {
   project: "SOR",
   issuer: "SRK",
   generalMailbox: "sorek@sorek.energy",
-  ownDomain: "sorek.energy",
+  // Domains of Sorek staff (emails from these are "outgoing")
+  ownDomains: ["sorek.energy", "edeltech.co.il"],
   // Values that exist in the EmailRegister "Company" choice column; any other code is written as "Other"
   companyChoices: ["GOV", "FIC", "SNR", "SIE"]
 };

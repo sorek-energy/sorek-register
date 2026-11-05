@@ -454,7 +454,8 @@
     }
     return code;
   }
-  function isOwnDomain(d) { return (C.ownDomains || []).some(function (x) { x = String(x).toLowerCase(); return d === x || d.endsWith("." + x); }); }
+  var OWN_DOMAINS = (C.ownDomains && C.ownDomains.length ? C.ownDomains : [C.ownDomain]).concat(["sorek.energy", "edeltech.co.il"]).filter(Boolean);
+  function isOwnDomain(d) { return OWN_DOMAINS.some(function (x) { x = String(x).toLowerCase(); return d === x || d.endsWith("." + x); }); }
   // Other parties' own correspondence numbers, e.g. Siemens "IL5002-SE-SPE-00187" (prefix set in Companies.RefPrefix).
   // Returns [{ref, code}] in the order they appear: the first is usually the email's own number, the rest are references.
   function externalRefs(text) {
@@ -922,7 +923,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.15</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.16</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");
