@@ -10,6 +10,9 @@
   var TASK_SCOPES = ["https://graph.microsoft.com/Tasks.ReadWrite"];
   var NUM_RE = /SOR-[A-Z]{3}-[A-Z]{3}-\d{4}/i;
   var NUM_RE_G = /SOR-[A-Z]{3}-[A-Z]{3}-\d{4}/gi;
+  // Any project number from the documentation procedure (SOR-GOP-PRO-0001 §1):
+  // communication SOR-III-RRR-NNNN · document SOR-DDD-ZZZ-NNNN-&VVVVVV(-R) · transmittal/issued SOR-III-RRR-ZZZ-NNNN · CRS-…
+  var ANY_RE_G = /(?:CRS-)?SOR-[A-Z0-9]{3}-[A-Z0-9]{3}(?:-[A-Z0-9]{3})?-\d{4,5}(?:-{1,2}&[A-Z0-9]{6}(?:-\d{2})?)?/gi;
   var REPLY_RE = /^\s*(re|fw|fwd|aw|wg|\u05EA\u05E9\u05D5\u05D1\u05D4|\u05D4\u05E9\u05D1|\u05D4\u05D5\u05E2\u05D1\u05E8)\s*:/i;
   // keyword Category -> Impact option; categories that also suggest Variation
   var IMPACT_OF = { "cost": "Cost", "time & delay": "Time", "time": "Time", "scope": "Scope", "ehs": "EHS", "quality": "Quality" };
@@ -361,14 +364,27 @@
   function cleanTopic(subject) {
     var s = String(subject || "");
     for (var i = 0; i < 5; i++) s = s.replace(REPLY_RE, "").trim();
-    s = s.replace(NUM_RE_G, " ");
+    s = s.replace(new RegExp(ANY_RE_G.source, "gi"), " ");
     externalRefs(s).forEach(function (r) { s = s.split(r.ref).join(" ").split(r.ref.toLowerCase()).join(" "); });
     for (var j = 0; j < 5; j++) s = s.replace(REPLY_RE, "").trim();
     return s.replace(/\s{2,}/g, " ").replace(/^[\s\-_–:]+|[\s\-_–:]+$/g, "").trim();
   }
+  // Project numbers in a text, in order: kind "comm" = correspondence number (both codes are parties), "doc" = document / transmittal / CRS
+  function projRefs(text) {
+    var out = [], seen = {}, m, re = new RegExp(ANY_RE_G.source, "gi");
+    var codes = companies.map(function (c) { return c.code; }).concat([C.issuer]);
+    while ((m = re.exec(String(text || ""))) !== null) {
+      var r = m[0].toUpperCase(); if (seen[r]) continue; seen[r] = true;
+      var p = r.split("-");
+      var comm = p.length === 4 && p[0] === C.project && codes.indexOf(p[1]) >= 0 && codes.indexOf(p[2]) >= 0;
+      out.push({ ref: r, kind: comm ? "comm" : "doc", at: m.index });
+    }
+    return out;
+  }
+  function firstComm(text) { var c = projRefs(text).filter(function (x) { return x.kind === "comm"; })[0]; return c ? c.ref : null; }
   function refsInSubject(subject) {
     var out = [], seen = {};
-    (String(subject || "").match(NUM_RE_G) || []).forEach(function (n) { n = n.toUpperCase(); if (!seen[n]) { seen[n] = true; out.push(n); } });
+    projRefs(subject).forEach(function (x) { if (!seen[x.ref]) { seen[x.ref] = true; out.push(x.ref); } });
     externalRefs(String(subject || "")).forEach(function (r) { if (!seen[r.ref]) { seen[r.ref] = true; out.push(r.ref); } });
     return out;
   }
@@ -415,7 +431,7 @@
   var STOP = ("the and for from with to of on in at by re fw fwd aw wg about regarding email mail test please dear kind regards our your this that are is be as an a " +
     "\u05e9\u05dc \u05d0\u05ea \u05e2\u05dc \u05e2\u05dd \u05d0\u05dc \u05d0\u05d5 \u05d2\u05dd \u05dc\u05d0 \u05db\u05df \u05de\u05d9\u05d9\u05dc \u05e0\u05d9\u05e1\u05d9\u05d5\u05df \u05d1\u05e0\u05d5\u05e9\u05d0 \u05e2\u05d1\u05d5\u05e8 \u05dc\u05d2\u05d1\u05d9 \u05d4\u05e0\u05d3\u05d5\u05df \u05ea\u05e9\u05d5\u05d1\u05d4").split(" ");
   function words(t) {
-    return String(t || "").toLowerCase().replace(NUM_RE_G, " ").split(/[^a-z0-9\u0590-\u05ff]+/)
+    return String(t || "").replace(new RegExp(ANY_RE_G.source, "gi"), " ").toLowerCase().split(/[^a-z0-9\u0590-\u05ff]+/)
       .filter(function (w) { return w.length >= 3 && STOP.indexOf(w) < 0 && !/^\d+$/.test(w); })
       .filter(function (w, i, a) { return a.indexOf(w) === i; });
   }
@@ -623,9 +639,10 @@
     var addrs = to.concat(cc).map(function (r) { return r.emailAddress; });
     var isReply = REPLY_RE.test(subject || "");
     // Already numbered by us (a new email after Insert, or a saved draft)
-    var own = !isReply && (subject || "").match(new RegExp("^\\s*" + C.project + "-" + C.issuer + "-[A-Z]{3}-\\d{4}", "i"));
+    var pr0 = projRefs(subject)[0];
+    var own = !isReply && pr0 && pr0.kind === "comm" && pr0.ref.indexOf(C.project + "-" + C.issuer + "-") === 0 && !String(subject || "").slice(0, pr0.at).trim();
     if (own && !forceNew) {
-      var num0 = own[0].trim().toUpperCase();
+      var num0 = pr0.ref;
       var rec = await findRecord({ number: num0 });
       if (rec) recordPanel(rec, [], { compose: true });
       else show('<div class="warn">This email already has the number <b class="mono">' + esc(num0) + '</b> in the subject, but it is not in the register.</div>');
@@ -636,7 +653,7 @@
     var sug = suggest(hits);
     var subjRefs = refsInSubject(subject);
     var detected = codeForAddresses(addrs);
-    if (!detected && subjRefs.length) { var c0 = codeFromNumber(subjRefs[0]) || (externalRefs(subjRefs[0])[0] || {}).code; if (c0 && companies.some(function (c) { return c.code === c0; })) detected = c0; }
+    if (!detected && subjRefs.length) { var c0 = (firstComm(subject) && codeFromNumber(firstComm(subject))) || (externalRefs(subjRefs[0])[0] || {}).code; if (c0 && companies.some(function (c) { return c.code === c0; })) detected = c0; }
     var st = { code: detected || (companies[0] && companies[0].code), picked: false, showCos: false };
     var autoRefs = [];
     for (var i = 0; i < subjRefs.length && i < 5; i++) autoRefs.push({ ref: subjRefs[i], subject: await subjectOf(subjRefs[i]) });
@@ -857,15 +874,14 @@
     var fromUs = internal || isOwnDomain(domainOf(from));
     var fromShown = internal ? (fromName || "colleague") + " (internal address)" : from;
     var addrOf = function (r) { var a = r.emailAddress || ""; return a.indexOf("@") >= 0 ? a : (r.displayName || a); };
-    var m = subject.match(NUM_RE);
-    var number = m ? m[0].toUpperCase() : null;
+    var number = firstComm(subject);
     var body = await bodyText();
     var hits = scan(subject + " " + body);
     var sug = suggest(hits);
     var refs = externalRefs(subject);
     // every reference number in the subject (SOR numbers of other parties included) goes to ExternalRef
     var allRefs = [];
-    (subject.match(NUM_RE_G) || []).map(function (x) { return x.toUpperCase(); }).concat(refs.map(function (r) { return r.ref; }))
+    projRefs(subject).map(function (x) { return x.ref; }).concat(refs.map(function (r) { return r.ref; }))
       .forEach(function (x) { if (allRefs.indexOf(x) < 0) allRefs.push(x); });
     var refText = allRefs.join("; ");
     var rec = await findRecord({ messageId: item.internetMessageId, number: fromUs && number && number.indexOf(C.project + "-" + C.issuer + "-") === 0 ? number : null });
@@ -923,7 +939,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.16</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.17</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");

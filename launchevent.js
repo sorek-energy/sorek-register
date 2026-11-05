@@ -22,7 +22,7 @@ function onMessageSendHandler(event) {
     var item = Office.context.mailbox.item;
     item.subject.getAsync(function (sr) {
       var subject = (sr && sr.value) || "";
-      if (/SOR-[A-Z]{3}-[A-Z]{3}-\d{4}/i.test(subject)) { sorekAllow(event); return; }
+      if (/^\s*SOR-[A-Z]{3}-[A-Z]{3}-\d{4}(?![-\d])/i.test(subject)) { sorekAllow(event); return; }
       if (/^\s*(re|fw|fwd|aw|wg)\s*:/i.test(subject) || /^\s*(תשובה|השב|הועבר)\s*:/.test(subject)) { sorekAllow(event); return; }
 
       var rs = null;
@@ -117,7 +117,7 @@ function onRecipientsChangedHandler(event) {
     if (rs && rs.get("sorBar") === false) { clear(); return; }
     item.subject.getAsync(function (sr) {
       var subject = (sr && sr.value) || "";
-      if (/SOR-[A-Z]{3}-[A-Z]{3}-\d{4}/i.test(subject) || /^\s*(re|fw|fwd|aw|wg)\s*:/i.test(subject) ||
+      if (/^\s*SOR-[A-Z]{3}-[A-Z]{3}-\d{4}(?![-\d])/i.test(subject) || /^\s*(re|fw|fwd|aw|wg)\s*:/i.test(subject) ||
           /^\s*(\u05EA\u05E9\u05D5\u05D1\u05D4|\u05D4\u05E9\u05D1|\u05D4\u05D5\u05E2\u05D1\u05E8)\s*:/.test(subject)) { clear(); return; }
       sorekProjectHit(item, rs, function (hit) {
         if (!hit) { clear(); return; }
@@ -144,10 +144,12 @@ function onRecipientsChangedHandler(event) {
    No new number is taken. Turn off in the pane: Settings > Add the header to replies and forwards automatically. */
 var SOREK_REPLY_RE = /^\s*(re|fw|fwd|aw|wg|תשובה|השב|הועבר)\s*:/i;
 function sorekEsc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+// Any project number (communication, document, transmittal, CRS) – see SOR-GOP-PRO-0001 §1
+function SOREK_ANY_RE() { return /(?:CRS-)?SOR-[A-Z0-9]{3}-[A-Z0-9]{3}(?:-[A-Z0-9]{3})?-\d{4,5}(?:-{1,2}&[A-Z0-9]{6}(?:-\d{2})?)?/gi; }
 function sorekTopic(subject) {
   var s = String(subject || "");
   for (var i = 0; i < 5; i++) s = s.replace(SOREK_REPLY_RE, "").trim();
-  s = s.replace(/SOR-[A-Z]{3}-[A-Z]{3}-\d{4}/gi, " ");
+  s = s.replace(SOREK_ANY_RE(), " ");
   for (var j = 0; j < 5; j++) s = s.replace(SOREK_REPLY_RE, "").trim();
   return s.replace(/\s{2,}/g, " ").replace(/^[\s\-_–:]+|[\s\-_–:]+$/g, "").trim();
 }
@@ -169,7 +171,7 @@ function onNewComposeHandler(event) {
     item.subject.getAsync(function (sr) {
       var subject = (sr && sr.value) || "";
       if (!SOREK_REPLY_RE.test(subject)) { finish(); return; }
-      var refs = [], m, re = /SOR-[A-Z]{3}-[A-Z]{3}-\d{4}/gi;
+      var refs = [], m, re = SOREK_ANY_RE();
       while ((m = re.exec(subject))) { var r = m[0].toUpperCase(); if (refs.indexOf(r) < 0) refs.push(r); }
       if (!refs.length) { finish(); return; }
       var topic = sorekTopic(subject);
