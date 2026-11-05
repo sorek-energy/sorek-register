@@ -72,13 +72,15 @@
   }
   async function token(interactive) {
     var acc = pca.getActiveAccount() || pca.getAllAccounts()[0];
-    var req = acc ? { scopes: SCOPES, account: acc } : { scopes: SCOPES };
+    // Always ask Sorek's organisation: the register lives there (guests from other organisations included)
+    var sorekAuthority = "https://login.microsoftonline.com/" + C.tenantId;
+    var req = acc ? { scopes: SCOPES, account: acc, authority: sorekAuthority } : { scopes: SCOPES, authority: sorekAuthority };
     try {
       var r = await pca.acquireTokenSilent(req);
       return r.accessToken;
     } catch (e) {
       if (!interactive) throw Object.assign(new Error("signin"), { needSignIn: true });
-      var p = await pca.acquireTokenPopup({ scopes: SCOPES });
+      var p = await pca.acquireTokenPopup({ scopes: SCOPES, authority: sorekAuthority });
       if (p.account) pca.setActiveAccount(p.account);
       return p.accessToken;
     }
@@ -910,7 +912,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.12</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.13</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");
