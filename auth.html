@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in to Sorek</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <script src="config.js?v=118"></script>
+  <style>
+    body { font-family: "Segoe UI", system-ui, sans-serif; font-size: 14px; color: #323130; margin: 24px; }
+    .err { color: #a4262c; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <p id="msg">Signing in to Sorek…</p>
+  <script>
+  /* Sorek Register – sign-in window for guests from another organisation (opened by the add-in with displayDialogAsync).
+     Signs in against Sorek's organisation and hands the token back to the add-in. */
+  (function () {
+    var C = window.SOREK_CONFIG;
+    var SCOPES = ["https://graph.microsoft.com/Sites.ReadWrite.All"];
+    var MSAL_URLS = [
+      "https://cdn.jsdelivr.net/npm/@azure/msal-browser@4/lib/msal-browser.min.js",
+      "https://unpkg.com/@azure/msal-browser@4/lib/msal-browser.min.js",
+      "https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"
+    ];
+    var officeReady = false;
+    function say(t, bad) { var m = document.getElementById("msg"); m.textContent = t; m.className = bad ? "err" : ""; }
+    function send(obj) {
+      var txt = JSON.stringify(obj);
+      var trySend = function () {
+        try { Office.context.ui.messageParent(txt); return true; } catch (e) { return false; }
+      };
+      if (officeReady && trySend()) return;
+      var n = 0, t = setInterval(function () { n++; if ((officeReady && trySend()) || n > 50) clearInterval(t); }, 200);
+    }
+    function loadScript(u) { return new Promise(function (res, rej) { var s = document.createElement("script"); s.src = u; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+    async function loadMsal() {
+      for (var i = 0; i < MSAL_URLS.length; i++) { try { await loadScript(MSAL_URLS[i]); if (window.msal) return; } catch (e) { /* next */ } }
+      throw new Error("The sign-in library could not be loaded.");
+    }
+    function ok(r) {
+      say("Signed in. You can close this window.");
+      send({ ok: true, token: r.accessToken, exp: Math.floor((r.expiresOn ? r.expiresOn.getTime() : Date.now() + 3000000) / 1000), user: (r.account && r.account.username) || "" });
+    }
+    async function main() {
+      try {
+        await loadMsal();
+        var authority = "https://login.microsoftonline.com/" + C.tenantId;
+        var pca = new msal.PublicClientApplication({
+          auth: { clientId: C.clientId, authority: authority, redirectUri: location.origin + location.pathname },
+          cache: { cacheLocation: "localStorage" }
+        });
+        await pca.initialize();
+        var back = await pca.handleRedirectPromise();
+        if (back && back.accessToken) { ok(back); return; }
+        var hint = new URLSearchParams(location.search).get("hint") || "";
+        var acc = pca.getAllAccounts()[0];
+        if (acc) {
+          try { ok(await pca.acquireTokenSilent({ scopes: SCOPES, account: acc, authority: authority })); return; } catch (e) { /* go to the sign-in page */ }
+        }
+        say("Opening the Microsoft sign-in page…");
+        await pca.acquireTokenRedirect({ scopes: SCOPES, authority: authority, loginHint: hint || undefined });
+      } catch (e) {
+        var m = (e && (e.errorMessage || e.message)) || String(e);
+        say("Sign-in failed: " + m, true);
+        send({ ok: false, msg: m });
+      }
+    }
+    if (window.Office && Office.onReady) Office.onReady(function () { officeReady = true; });
+    main();
+  })();
+  </script>
+</body>
+</html>

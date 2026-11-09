@@ -73,20 +73,82 @@
     if (naa) { pca = await msal.createNestablePublicClientApplication(cfg); }
     else { pca = new msal.PublicClientApplication(cfg); await pca.initialize(); }
   }
+  /* ---- Guests from another organisation (e.g. Edeltech) ----
+     Outlook's built-in sign-in gives them a token of THEIR organisation, which cannot open Sorek's SharePoint
+     ("Invalid hostname for this tenancy"). For them we sign in once in a Microsoft window aimed at Sorek (auth.html)
+     and keep that token here. */
+  var GUEST_KEY = "sorGuest", GUEST_TOK = "sorGuestTok";
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
+  function tidOf(at) {
+    try { var p = at.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"); return JSON.parse(atob(p + "===".slice((p.length + 3) % 4))).tid || ""; }
+    catch (e) { return ""; }
+  }
+  function isGuest() { return lsGet(GUEST_KEY) === "1"; }
+  var guestPca = null;
+  async function guestClient() {
+    if (guestPca) return guestPca;
+    guestPca = new msal.PublicClientApplication({
+      auth: { clientId: C.clientId, authority: "https://login.microsoftonline.com/" + C.tenantId, redirectUri: location.origin + location.pathname.replace(/[^/]*$/, "") + "auth.html" },
+      cache: { cacheLocation: "localStorage" }
+    });
+    await guestPca.initialize();
+    return guestPca;
+  }
+  function openGuestDialog() {
+    return new Promise(function (res, rej) {
+      var hint = ((Office.context.mailbox && Office.context.mailbox.userProfile) || {}).emailAddress || "";
+      var url = location.origin + location.pathname.replace(/[^/]*$/, "") + "auth.html?hint=" + encodeURIComponent(hint);
+      Office.context.ui.displayDialogAsync(url, { height: 60, width: 30, promptBeforeOpen: false }, function (r) {
+        if (r.status !== Office.AsyncResultStatus.Succeeded) { rej(new Error("The sign-in window could not open (" + ((r.error && r.error.message) || "") + ")")); return; }
+        var dlg = r.value;
+        dlg.addEventHandler(Office.EventType.DialogMessageReceived, function (arg) {
+          try { dlg.close(); } catch (e) { /* closed */ }
+          var m = {}; try { m = JSON.parse(arg.message); } catch (e) { m = { ok: false, msg: arg.message }; }
+          if (m.ok && m.token) { lsSet(GUEST_TOK, JSON.stringify({ t: m.token, exp: m.exp || 0 })); res(m.token); }
+          else rej(new Error(m.msg || "Sign-in failed"));
+        });
+        dlg.addEventHandler(Office.EventType.DialogEventReceived, function () { rej(new Error("The sign-in window was closed")); });
+      });
+    });
+  }
+  async function guestToken(interactive) {
+    var c = null; try { c = JSON.parse(lsGet(GUEST_TOK) || "null"); } catch (e) { c = null; }
+    if (c && c.t && c.exp * 1000 - Date.now() > 120000) return c.t;
+    try {
+      var gp = await guestClient();
+      var acc = gp.getAllAccounts().filter(function (a) { return String(a.tenantId || "").toLowerCase() === String(C.tenantId).toLowerCase(); })[0] || gp.getAllAccounts()[0];
+      if (acc) {
+        var r = await gp.acquireTokenSilent({ scopes: SCOPES, account: acc, authority: "https://login.microsoftonline.com/" + C.tenantId });
+        if (tidOf(r.accessToken).toLowerCase() === String(C.tenantId).toLowerCase()) {
+          lsSet(GUEST_TOK, JSON.stringify({ t: r.accessToken, exp: Math.floor((r.expiresOn ? r.expiresOn.getTime() : Date.now() + 3000000) / 1000) }));
+          return r.accessToken;
+        }
+      }
+    } catch (e) { /* needs the window */ }
+    if (!interactive) throw Object.assign(new Error("signin"), { needSignIn: true, guest: true });
+    return await openGuestDialog();
+  }
+
   async function token(interactive) {
+    if (isGuest()) return guestToken(interactive);
     var acc = pca.getActiveAccount() || pca.getAllAccounts()[0];
     // Always ask Sorek's organisation: the register lives there (guests from other organisations included)
     var sorekAuthority = "https://login.microsoftonline.com/" + C.tenantId;
     var req = acc ? { scopes: SCOPES, account: acc, authority: sorekAuthority } : { scopes: SCOPES, authority: sorekAuthority };
+    var at;
     try {
-      var r = await pca.acquireTokenSilent(req);
-      return r.accessToken;
+      at = (await pca.acquireTokenSilent(req)).accessToken;
     } catch (e) {
       if (!interactive) throw Object.assign(new Error("signin"), { needSignIn: true });
       var p = await pca.acquireTokenPopup({ scopes: SCOPES, authority: sorekAuthority });
       if (p.account) pca.setActiveAccount(p.account);
-      return p.accessToken;
+      at = p.accessToken;
     }
+    // Outlook handed us a token of another organisation → this user is a guest: switch to the Sorek sign-in window
+    var tid = tidOf(at);
+    if (tid && tid.toLowerCase() !== String(C.tenantId).toLowerCase()) { lsSet(GUEST_KEY, "1"); return guestToken(interactive); }
+    return at;
   }
 
   // Separate token for To Do tasks: never prompts, so the rest works before IT approves Tasks.ReadWrite
@@ -939,7 +1001,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.17</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.18</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");
@@ -960,7 +1022,9 @@
     catch (e) { showError("Sign-in could not start", e.message); return; }
     try { await token(false); }
     catch (e) {
-      show('<div class="warn">Sign in once to connect the add-in to the SharePoint register.</div><button class="btnp" id="signin">Sign in</button>');
+      show(isGuest()
+        ? '<div class="warn">You are a guest from another organisation. Sign in once to Sorek to connect to the register.<br><span class="muted">A Microsoft window opens. Use your own work account.</span></div><button class="btnp" id="signin">Sign in to Sorek</button>'
+        : '<div class="warn">Sign in once to connect the add-in to the SharePoint register.</div><button class="btnp" id="signin">Sign in</button>');
       $("#signin").onclick = async function () {
         try { await token(true); run(); }
         catch (err) { showError("Sign-in failed", err.message + (/consent|AADSTS65001|AADSTS90094/i.test(err.message) ? " — your organisation may require an administrator to approve the app." : "")); }
