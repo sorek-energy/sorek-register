@@ -549,6 +549,20 @@
     });
     return out.sort(function (a, b) { return a.at - b.at; });
   }
+  // Number from a "Correspondence ID: …" line at the top of the body (before any quoted earlier email)
+  function refFromBody(body) {
+    var t = String(body || "");
+    var cut = t.search(/(^|\n)\s*(From|\u05de\u05d0\u05ea)\s*:/i); if (cut > 0) t = t.slice(0, cut);
+    t = t.slice(0, 3000);
+    var m = /Correspondence\s*ID\s*[:\-]?\s*([^\n\r]{0,160})/i.exec(t);
+    if (!m) return null;
+    var line = m[1];
+    var ext = externalRefs(line)[0];
+    if (ext) return { ref: ext.ref, ext: ext };
+    var pr = projRefs(line)[0];
+    if (pr) return { ref: pr.ref, comm: pr.kind === "comm" };
+    return null;
+  }
   // Create a register row; tolerate a Company column without the new code and a missing ExternalRef column
   async function createRegister(fields) {
     if (regCols) {
@@ -945,6 +959,12 @@
     var allRefs = [];
     projRefs(subject).map(function (x) { return x.ref; }).concat(refs.map(function (r) { return r.ref; }))
       .forEach(function (x) { if (allRefs.indexOf(x) < 0) allRefs.push(x); });
+    // Siemens minutes: no number in the subject, but a "Correspondence ID:" line at the top of the body
+    var fromBody = false;
+    if (!allRefs.length) {
+      var bodyRef = refFromBody(body);
+      if (bodyRef) { fromBody = true; allRefs.push(bodyRef.ref); refs = bodyRef.ext ? [bodyRef.ext] : []; if (!refs.length && bodyRef.comm) number = bodyRef.ref; }
+    }
     var refText = allRefs.join("; ");
     var rec = await findRecord({ messageId: item.internetMessageId, number: fromUs && number && number.indexOf(C.project + "-" + C.issuer + "-") === 0 ? number : null });
     if (rec) {
@@ -968,7 +988,7 @@
     show(
       '<div class="warn"><b>Not in the register yet.</b><br><span class="muted">' + (dir === "In" ? "Incoming" : "Outgoing") + (code ? " · " + esc(code) : "") + (number ? " · ref " + esc(number) : "") + '</span>' +
       '<div class="muted" style="margin-top:4px;font-size:12px;word-break:break-all">From: ' + esc(fromShown) + '</div>' +
-      (refs.length ? '<div style="margin-top:6px;font-size:13px">Their ref: <b class="mono">' + esc(refs[0].ref) + '</b>' + (refs.length > 1 ? '<br><span class="muted">Refers to: ' + esc(refs.slice(1).map(function (r) { return r.ref; }).join(", ")) + '</span>' : "") + '</div>' : "") +
+      (refs.length ? '<div style="margin-top:6px;font-size:13px">Their ref: <b class="mono">' + esc(refs[0].ref) + '</b>' + (fromBody ? ' <span class="muted">(from the email body)</span>' : "") + (refs.length > 1 ? '<br><span class="muted">Refers to: ' + esc(refs.slice(1).map(function (r) { return r.ref; }).join(", ")) + '</span>' : "") + '</div>' : "") +
       '</div>' +
       (hits.length ? '<div><div class="lbl">Keywords found</div>' + hits.map(function (k) { return '<span class="kw">' + esc(k) + '</span>'; }).join("") + '</div>' : "") +
       '<label class="varbox"><input type="checkbox" id="var"' + (sug.variation ? " checked" : "") + '><span><b>Variation</b><br><span class="muted">Track for the Claims Manager</span></span></label>' +
@@ -1001,7 +1021,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.18</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.19</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");
