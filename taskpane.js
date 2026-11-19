@@ -425,10 +425,10 @@
   // Topic without RE:/FW: prefixes and without correspondence numbers
   function cleanTopic(subject) {
     var s = String(subject || "");
-    for (var i = 0; i < 5; i++) s = s.replace(REPLY_RE, "").trim();
+    for (var i = 0; i < 5; i++) s = s.replace(REPLY_RE, "").replace(TAG_RE, "").trim();
     s = s.replace(new RegExp(ANY_RE_G.source, "gi"), " ");
     externalRefs(s).forEach(function (r) { s = s.split(r.ref).join(" ").split(r.ref.toLowerCase()).join(" "); });
-    for (var j = 0; j < 5; j++) s = s.replace(REPLY_RE, "").trim();
+    for (var j = 0; j < 5; j++) s = s.replace(REPLY_RE, "").replace(TAG_RE, "").trim();
     return s.replace(/\s{2,}/g, " ").replace(/^[\s\-_–:]+|[\s\-_–:]+$/g, "").trim();
   }
   // Project numbers in a text, in order: kind "comm" = correspondence number (both codes are parties), "doc" = document / transmittal / CRS
@@ -490,7 +490,7 @@
         .map(function (f) { return { ref: f.Title, subject: cleanTopic(f.MailSubject || ""), date: f.MailDate }; });
     } catch (e) { return []; }
   }
-  var STOP = ("the and for from with to of on in at by re fw fwd aw wg about regarding email mail test please dear kind regards our your this that are is be as an a " +
+  var STOP = ("sorek il5002 the and for from with to of on in at by re fw fwd aw wg about regarding email mail test please dear kind regards our your this that are is be as an a " +
     "\u05e9\u05dc \u05d0\u05ea \u05e2\u05dc \u05e2\u05dd \u05d0\u05dc \u05d0\u05d5 \u05d2\u05dd \u05dc\u05d0 \u05db\u05df \u05de\u05d9\u05d9\u05dc \u05e0\u05d9\u05e1\u05d9\u05d5\u05df \u05d1\u05e0\u05d5\u05e9\u05d0 \u05e2\u05d1\u05d5\u05e8 \u05dc\u05d2\u05d1\u05d9 \u05d4\u05e0\u05d3\u05d5\u05df \u05ea\u05e9\u05d5\u05d1\u05d4").split(" ");
   function words(t) {
     return String(t || "").replace(new RegExp(ANY_RE_G.source, "gi"), " ").toLowerCase().split(/[^a-z0-9\u0590-\u05ff]+/)
@@ -549,10 +549,47 @@
     });
     return out.sort(function (a, b) { return a.at - b.at; });
   }
+  /* ---------- Subject tag (number lives in the body block, not in the subject) ---------- */
+  var TAG = "Sorek: ";
+  var TAG_RE = /^\s*sorek\s*[:\-\u2013]\s*/i;
+  function withTag(topic) { topic = String(topic || "").trim(); return TAG_RE.test(topic) ? topic : TAG + topic; }
+  function bodyTop(body) {
+    var t = String(body || "");
+    var cut = t.search(/(^|\n)\s*(From|\u05de\u05d0\u05ea)\s*:/i);
+    return (cut >= 0 ? t.slice(0, cut) : t).slice(0, 3000);
+  }
+  // Our own number in the block at the top of an email we are writing / sent ("Correspondence ID: SOR-SRK-…")
+  function ownFromBody(body) {
+    var m = new RegExp("Correspondence\\s*ID\\s*[:\\-]?\\s*(" + C.project + "-" + C.issuer + "-[A-Z]{3}-\\d{4})(?![-\\d])", "i").exec(bodyTop(body));
+    return m ? m[1].toUpperCase() : null;
+  }
+  // First "Correspondence ID" number in the QUOTED part (the email this one answers)
+  function refFromQuoted(body) {
+    var t = String(body || ""), top = bodyTop(body).length;
+    var rest = t.slice(top, top + 20000);
+    var re = /Correspondence\s*ID\s*[:\-]?\s*([^\n\r]{0,160})/ig, m;
+    while ((m = re.exec(rest)) !== null) {
+      var ext = externalRefs(m[1])[0]; if (ext) return { ref: ext.ref, ext: ext };
+      var pr = projRefs(m[1])[0]; if (pr) return { ref: pr.ref, comm: pr.kind === "comm" };
+    }
+    return null;
+  }
+  // Latest numbered row of the same Outlook conversation
+  async function refFromConversation(convId) {
+    if (!convId || !regCols || !regCols.ConversationId) return null;
+    try {
+      var r = await items("register", "Title,MailSubject,MailDate,Status,ConversationId", "fields/ConversationId eq '" + q(convId) + "'");
+      var f = r.map(function (x) { return x.fields || {}; })
+        .filter(function (x) { return x.Title && x.Title !== "(no number)" && x.Title.indexOf("(duplicate)") < 0 && x.Status !== "Cancelled"; })
+        .sort(function (a, b) { return String(b.MailDate || "").localeCompare(String(a.MailDate || "")); })[0];
+      return f ? { ref: f.Title, subject: cleanTopic(f.MailSubject || ""), date: f.MailDate } : null;
+    } catch (e) { return null; }
+  }
+  function convIdOf() { try { return item.conversationId || ""; } catch (e) { return ""; } }
   // Number from a "Correspondence ID: …" line at the top of the body (before any quoted earlier email)
   function refFromBody(body) {
     var t = String(body || "");
-    var cut = t.search(/(^|\n)\s*(From|\u05de\u05d0\u05ea)\s*:/i); if (cut > 0) t = t.slice(0, cut);
+    var cut = t.search(/(^|\n)\s*(From|\u05de\u05d0\u05ea)\s*:/i); if (cut >= 0) t = t.slice(0, cut);
     t = t.slice(0, 3000);
     var m = /Correspondence\s*ID\s*[:\-]?\s*([^\n\r]{0,160})/i.exec(t);
     if (!m) return null;
@@ -581,7 +618,7 @@
     }
   }
   function regSelect() {
-    var want = ["Title", "Direction", "Status", "Variation", "Impact", "ClaimsNotes", "MailSubject", "Company", "ExternalRef", "CancelReason", "DueDate", "Recipients"];
+    var want = ["Title", "Direction", "Status", "Variation", "Impact", "ClaimsNotes", "MailSubject", "Company", "ExternalRef", "CancelReason", "DueDate", "Recipients", "ConversationId"];
     return (regCols ? want.filter(function (k) { return k === "Title" || regCols[k]; }) : want.slice(0, 8)).join(",");
   }
   async function patchRegister(id, fields) {
@@ -717,14 +754,15 @@
     // Already numbered by us (a new email after Insert, or a saved draft)
     var pr0 = projRefs(subject)[0];
     var own = !isReply && pr0 && pr0.kind === "comm" && pr0.ref.indexOf(C.project + "-" + C.issuer + "-") === 0 && !String(subject || "").slice(0, pr0.at).trim();
-    if (own && !forceNew) {
-      var num0 = pr0.ref;
+    var body = await bodyText();
+    var ownBody = ownFromBody(body);
+    if ((own || ownBody) && !forceNew) {
+      var num0 = own ? pr0.ref : ownBody;
       var rec = await findRecord({ number: num0 });
       if (rec) recordPanel(rec, [], { compose: true });
-      else show('<div class="warn">This email already has the number <b class="mono">' + esc(num0) + '</b> in the subject, but it is not in the register.</div>');
+      else show('<div class="warn">This email already has the number <b class="mono">' + esc(num0) + '</b>, but it is not in the register.</div>');
       return;
     }
-    var body = await bodyText();
     var hits = scan(subject + " " + body);
     var sug = suggest(hits);
     var subjRefs = refsInSubject(subject);
@@ -733,6 +771,13 @@
     var st = { code: detected || (companies[0] && companies[0].code), picked: false, showCos: false };
     var autoRefs = [];
     for (var i = 0; i < subjRefs.length && i < 5; i++) autoRefs.push({ ref: subjRefs[i], subject: await subjectOf(subjRefs[i]) });
+    // Reply without a number in the subject: take it from the quoted email, or from the same Outlook conversation
+    if (!autoRefs.length) {
+      var qref = refFromQuoted(body);
+      if (qref) autoRefs.push({ ref: qref.ref, subject: await subjectOf(qref.ref), src: "quoted" });
+      else { var cref = await refFromConversation(convIdOf()); if (cref) autoRefs.push({ ref: cref.ref, subject: cref.subject, src: "conversation" }); }
+      if (autoRefs.length && !detected) { var c1 = codeFromNumber(autoRefs[0].ref); if (c1 && companies.some(function (c) { return c.code === c1; })) detected = c1; }
+    }
     var chainRefs = await chainOf(autoRefs.map(function (r) { return r.ref; }));
     var recentCache = {};
     var form = { topic: cleanTopic(subject) || "", refs: autoRefs.map(function (r) { return r.ref; }), extra: "", extraOpen: false };
@@ -764,7 +809,7 @@
       var recent = co ? recentCache[co.code].filter(function (r) { return !autoRefs.concat(chainRefs).some(function (a) { return a.ref === r.ref; }); }) : [];
       var refRow = function (r, auto) {
         return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:3px 0"><input type="checkbox" data-ref="' + esc(r.ref) + '" data-sub="' + esc(r.subject || "") + '"' + (form.refs.indexOf(r.ref) >= 0 ? " checked" : "") + ' style="margin-top:3px">' +
-          '<span><b class="mono">' + esc(r.ref) + '</b>' + (r.subject ? ' · <bdi>' + esc(r.subject) + '</bdi>' : "") + (r.date ? ' <span class="muted">· ' + esc(showDay(r.date)) + '</span>' : "") + (auto ? ' <span class="muted">(from the subject)</span>' : "") + '</span></label>';
+          '<span><b class="mono">' + esc(r.ref) + '</b>' + (r.subject ? ' · <bdi>' + esc(r.subject) + '</bdi>' : "") + (r.date ? ' <span class="muted">· ' + esc(showDay(r.date)) + '</span>' : "") + (auto ? ' <span class="muted">(' + (r.src === "quoted" ? "from the earlier email" : r.src === "conversation" ? "from this conversation" : "from the subject") + ')</span>' : "") + '</span></label>';
       };
       var simHtml = function () {
         var topicNow = $("#topic") ? $("#topic").value : form.topic;
@@ -827,14 +872,15 @@
         addrs = (await oget(item.to)).concat(await oget(item.cc)).map(function (r) { return r.emailAddress; });
         var res = await reserve(st.code, function (num) {
           return {
-            Direction: "Out", Company: companyChoice(st.code), MailSubject: num + "_" + topic, MailDate: new Date().toISOString(),
+            Direction: "Out", Company: companyChoice(st.code), MailSubject: withTag(topic), MailDate: new Date().toISOString(), ConversationId: convIdOf(),
             Status: "Issued", Variation: sug.variation, Keywords: hits.join(", "),
             Sender: (Office.context.mailbox.userProfile || {}).emailAddress || "", Recipients: addrs.join("; "),
             ExternalRef: refs.map(function (r) { return r.ref; }).join("; "),
             "Impact@odata.type": "Collection(Edm.String)", Impact: sug.impact
           };
         });
-        try { await oset(item.subject, res.num + "_" + topic); }
+        var tagAdded = !TAG_RE.test(topic);
+        try { await oset(item.subject, withTag(topic)); }
         catch (err) {
           // the number exists in the register but did not reach the email: cancel it so nothing is left hanging
           try { await patchRegister(res.id, { Status: "Cancelled", CancelReason: "Not inserted in the email (connection error)" }); } catch (e2) { /* best effort */ }
@@ -863,7 +909,7 @@
           '<p class="muted">Finish the email and click Send as usual.</p>' +
           '<div class="warn" id="relBox">Not sending this email after all? <button class="btns" id="relBtn" style="margin-top:8px;width:100%">Release number</button><span class="muted" style="display:block;margin-top:6px">Marked Cancelled in the register and removed from the email. Cancelled numbers are not reused.</span></div>'
         );
-        $("#relBtn").onclick = function () { askRelease(res.id, res.num, ccAdded); };
+        $("#relBtn").onclick = function () { askRelease(res.id, res.num, ccAdded, tagAdded); };
         try { item.notificationMessages.removeAsync("sorekHint", function () {}); } catch (e) { /* none */ }
 
         // auto-save the claims fields
@@ -903,24 +949,25 @@
   }
 
   /* ---------- Release a number that will not be sent ---------- */
-  function askRelease(recId, num, removeCc) {
+  function askRelease(recId, num, removeCc, removeTag) {
     var box = $("#relBox"), before = box.innerHTML;
     box.innerHTML = '<b>Release ' + esc(num) + '</b><p class="muted" style="margin:4px 0 10px">Marked Cancelled in the register. Change the reason if needed.</p>' +
       reasonForm("") +
       '<div style="display:flex;gap:8px;margin-top:10px"><button class="btnp" id="relGo" style="flex:1">Release</button><button class="btns" id="relBack">Back</button></div>';
-    $("#relBack").onclick = function () { box.innerHTML = before; $("#relBtn").onclick = function () { askRelease(recId, num, removeCc); }; };
+    $("#relBack").onclick = function () { box.innerHTML = before; $("#relBtn").onclick = function () { askRelease(recId, num, removeCc, removeTag); }; };
     $("#relGo").onclick = function () {
       var reason = $("#rsText").value.trim();
       if (!reason) { toast("Write why the number is cancelled", true); $("#rsText").focus(); return; }
       this.disabled = true; this.textContent = "Releasing…";
-      releaseNumber(recId, num, removeCc, reason);
+      releaseNumber(recId, num, removeCc, reason, removeTag);
     };
   }
-  async function releaseNumber(recId, num, removeCc, reason) {
+  async function releaseNumber(recId, num, removeCc, reason, removeTag) {
     try {
       await patchRegister(recId, { Status: "Cancelled", CancelReason: reason || "" });
       var subj = await oget(item.subject);
       var clean = String(subj || "").replace(new RegExp(String(num).replace(/[-]/g, "\\-") + "_?", "i"), "").trim();
+      if (removeTag) clean = clean.replace(TAG_RE, "").trim();
       await oset(item.subject, clean);
       if (removeCc) {
         var cc = await oget(item.cc);
@@ -960,15 +1007,29 @@
     projRefs(subject).map(function (x) { return x.ref; }).concat(refs.map(function (r) { return r.ref; }))
       .forEach(function (x) { if (allRefs.indexOf(x) < 0) allRefs.push(x); });
     // Siemens minutes: no number in the subject, but a "Correspondence ID:" line at the top of the body
-    var fromBody = false;
+    // No number in the subject: the block at the top of the body → the quoted earlier email → the same Outlook conversation
+    var refSrc = "";
     if (!allRefs.length) {
-      var bodyRef = refFromBody(body);
-      if (bodyRef) { fromBody = true; allRefs.push(bodyRef.ref); refs = bodyRef.ext ? [bodyRef.ext] : []; if (!refs.length && bodyRef.comm) number = bodyRef.ref; }
+      var found = refFromBody(body), srcName = "body";
+      if (!found) { found = refFromQuoted(body); srcName = "quoted"; }
+      if (!found) {
+        var cr = await refFromConversation(convIdOf());
+        if (cr) { var crp = projRefs(cr.ref)[0]; found = { ref: cr.ref, comm: !!(crp && crp.kind === "comm"), ext: externalRefs(cr.ref)[0] }; srcName = "conversation"; }
+      }
+      if (found) {
+        refSrc = srcName; allRefs.push(found.ref);
+        refs = found.ext ? [found.ext] : [];
+        if (!refs.length && found.comm) number = found.ref;
+      }
     }
+    var srcNote = refSrc ? ' <span class="muted">(' + ({ body: "from the email body", quoted: "from the earlier email", conversation: "from this conversation" })[refSrc] + ')</span>' : "";
     var refText = allRefs.join("; ");
     var rec = await findRecord({ messageId: item.internetMessageId, number: fromUs && number && number.indexOf(C.project + "-" + C.issuer + "-") === 0 ? number : null });
     if (rec) {
       var rf = rec.fields || {};
+      if (regCols && regCols.ConversationId && !rf.ConversationId && convIdOf()) {
+        try { await patchRegister(rec.id, { ConversationId: convIdOf() }); rf.ConversationId = convIdOf(); } catch (e) { /* best effort */ }
+      }
       if (refText && !rf.ExternalRef && rf.Direction !== "Out") {
         // fill in their reference on rows logged before this feature existed
         var patch = { ExternalRef: refText };
@@ -986,9 +1047,9 @@
       ? ((number && codeFromNumber(number)) || codeForAddresses(recips) || (refs[0] && refs[0].code) || null)
       : (codeForAddresses([from]) || (number && codeFromNumber(number)) || (refs[0] && refs[0].code) || null);
     show(
-      '<div class="warn"><b>Not in the register yet.</b><br><span class="muted">' + (dir === "In" ? "Incoming" : "Outgoing") + (code ? " · " + esc(code) : "") + (number ? " · ref " + esc(number) : "") + '</span>' +
+      '<div class="warn"><b>Not in the register yet.</b><br><span class="muted">' + (dir === "In" ? "Incoming" : "Outgoing") + (code ? " · " + esc(code) : "") + (number ? " · ref " + esc(number) : "") + '</span>' + (number && !refs.length ? srcNote : "") +
       '<div class="muted" style="margin-top:4px;font-size:12px;word-break:break-all">From: ' + esc(fromShown) + '</div>' +
-      (refs.length ? '<div style="margin-top:6px;font-size:13px">Their ref: <b class="mono">' + esc(refs[0].ref) + '</b>' + (fromBody ? ' <span class="muted">(from the email body)</span>' : "") + (refs.length > 1 ? '<br><span class="muted">Refers to: ' + esc(refs.slice(1).map(function (r) { return r.ref; }).join(", ")) + '</span>' : "") + '</div>' : "") +
+      (refs.length ? '<div style="margin-top:6px;font-size:13px">Their ref: <b class="mono">' + esc(refs[0].ref) + '</b>' + srcNote + (refs.length > 1 ? '<br><span class="muted">Refers to: ' + esc(refs.slice(1).map(function (r) { return r.ref; }).join(", ")) + '</span>' : "") + '</div>' : "") +
       '</div>' +
       (hits.length ? '<div><div class="lbl">Keywords found</div>' + hits.map(function (k) { return '<span class="kw">' + esc(k) + '</span>'; }).join("") + '</div>' : "") +
       '<label class="varbox"><input type="checkbox" id="var"' + (sug.variation ? " checked" : "") + '><span><b>Variation</b><br><span class="muted">Track for the Claims Manager</span></span></label>' +
@@ -1003,6 +1064,7 @@
           MailSubject: subject, MailDate: (item.dateTimeCreated ? new Date(item.dateTimeCreated) : new Date()).toISOString(),
           Status: "Logged", Variation: $("#var").checked, Keywords: hits.join(", "),
           "Impact@odata.type": "Collection(Edm.String)", Impact: readImpact(),
+          ConversationId: convIdOf(),
           Sender: internal ? (fromName || from) : from, Recipients: recipsShown.join("; "), MessageId: item.internetMessageId || ""
         });
         var fresh = await g("GET", listPath("register") + "/items/" + created.id + "?$expand=fields");
@@ -1021,7 +1083,7 @@
       '<label><input type="checkbox" id="remind"' + (on ? " checked" : "") + '> Remind me on Send for new emails to project parties</label>' +
       '<label><input type="checkbox" id="barTgl"' + (barOn ? " checked" : "") + '> Show the project-email bar while writing</label>' +
       '<label><input type="checkbox" id="hdrTgl"' + (rs && rs.get("sorAutoHdr") === false ? "" : " checked") + '> Add the header to replies and forwards automatically</label></div>' : "") +
-      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.19</span>';
+      '<span>Signed in as ' + esc((Office.context.mailbox.userProfile || {}).emailAddress || "") + ' · version 1.0.20</span>';
     if ($("#setTgl")) $("#setTgl").onclick = function (e) { e.preventDefault(); var b = $("#setBox"); b.hidden = !b.hidden; b.style.display = b.hidden ? "none" : "flex"; };
     if ($("#setBox")) $("#setBox").style.display = "none";
     var ht = $("#hdrTgl");

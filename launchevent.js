@@ -17,6 +17,34 @@ var SOREK_DEFAULT_DOMAINS = {
 
 function sorekAllow(event) { event.completed({ allowEvent: true }); }
 
+/* The SOR number now lives in the block at the top of the body ("Correspondence ID: SOR-SRK-…"), not in the subject. */
+function sorekBodyTop(t) {
+  t = String(t || "");
+  var cut = t.search(/(^|\n)\s*(From|\u05de\u05d0\u05ea)\s*:/i);
+  return (cut >= 0 ? t.slice(0, cut) : t).slice(0, 3000);
+}
+function sorekHasOwnBlock(item, done) {
+  try {
+    item.body.getAsync(Office.CoercionType.Text, function (r) {
+      var t = (r && r.status === Office.AsyncResultStatus.Succeeded && r.value) || "";
+      done(/Correspondence\s*ID\s*[:\-]?\s*SOR-SRK-[A-Z]{3}-\d{4}/i.test(sorekBodyTop(t)));
+    });
+  } catch (e) { done(false); }
+}
+// First number on a "Correspondence ID" line of the quoted (earlier) email
+function sorekQuotedRef(t) {
+  t = String(t || "");
+  var rest = t.slice(sorekBodyTop(t).length, sorekBodyTop(t).length + 20000);
+  var re = /Correspondence\s*ID\s*[:\-]?\s*([^\n\r]{0,160})/ig, m;
+  while ((m = re.exec(rest)) !== null) {
+    var any = m[1].match(SOREK_ANY_RE());
+    if (any) return any[0].toUpperCase();
+    var ext = m[1].match(/[A-Z0-9]+(?:-[A-Z0-9&]+){2,}/i);
+    if (ext) return ext[0].toUpperCase();
+  }
+  return "";
+}
+
 function onMessageSendHandler(event) {
   try {
     var item = Office.context.mailbox.item;
@@ -29,6 +57,8 @@ function onMessageSendHandler(event) {
       try { rs = Office.context.roamingSettings; } catch (e) { rs = null; }
       if (rs && rs.get("sorReminder") === false) { sorekAllow(event); return; }
 
+      sorekHasOwnBlock(item, function (numbered) {
+      if (numbered) { sorekAllow(event); return; }
       var map = null;
       try { map = rs ? JSON.parse(rs.get("sorDomains") || "null") : null; } catch (e) { map = null; }
       if (!map) map = SOREK_DEFAULT_DOMAINS;
@@ -76,6 +106,7 @@ function onMessageSendHandler(event) {
           event.completed(opts);
         });
       });
+      });
     });
   } catch (e) {
     // Never block sending because of the helper
@@ -119,6 +150,8 @@ function onRecipientsChangedHandler(event) {
       var subject = (sr && sr.value) || "";
       if (/^\s*SOR-[A-Z]{3}-[A-Z]{3}-\d{4}(?![-\d])/i.test(subject) || /^\s*(re|fw|fwd|aw|wg)\s*:/i.test(subject) ||
           /^\s*(\u05EA\u05E9\u05D5\u05D1\u05D4|\u05D4\u05E9\u05D1|\u05D4\u05D5\u05E2\u05D1\u05E8)\s*:/.test(subject)) { clear(); return; }
+      sorekHasOwnBlock(item, function (numbered) {
+      if (numbered) { clear(); return; }
       sorekProjectHit(item, rs, function (hit) {
         if (!hit) { clear(); return; }
         var names = null;
@@ -136,6 +169,7 @@ function onRecipientsChangedHandler(event) {
           }]
         }, function () { finish(); });
       });
+      });
     });
   } catch (e) { finish(); }
 }
@@ -148,9 +182,9 @@ function sorekEsc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, fun
 function SOREK_ANY_RE() { return /(?:CRS-)?SOR-[A-Z0-9]{3}-[A-Z0-9]{3}(?:-[A-Z0-9]{3})?-\d{4,5}(?:-{1,2}&[A-Z0-9]{6}(?:-\d{2})?)?/gi; }
 function sorekTopic(subject) {
   var s = String(subject || "");
-  for (var i = 0; i < 5; i++) s = s.replace(SOREK_REPLY_RE, "").trim();
+  for (var i = 0; i < 5; i++) s = s.replace(SOREK_REPLY_RE, "").replace(/^\s*sorek\s*[:\-\u2013]\s*/i, "").trim();
   s = s.replace(SOREK_ANY_RE(), " ");
-  for (var j = 0; j < 5; j++) s = s.replace(SOREK_REPLY_RE, "").trim();
+  for (var j = 0; j < 5; j++) s = s.replace(SOREK_REPLY_RE, "").replace(/^\s*sorek\s*[:\-\u2013]\s*/i, "").trim();
   return s.replace(/\s{2,}/g, " ").replace(/^[\s\-_–:]+|[\s\-_–:]+$/g, "").trim();
 }
 function sorekHeaderHtml(refs, topic) {
@@ -173,13 +207,21 @@ function onNewComposeHandler(event) {
       if (!SOREK_REPLY_RE.test(subject)) { finish(); return; }
       var refs = [], m, re = SOREK_ANY_RE();
       while ((m = re.exec(subject))) { var r = m[0].toUpperCase(); if (refs.indexOf(r) < 0) refs.push(r); }
-      if (!refs.length) { finish(); return; }
       var topic = sorekTopic(subject);
+      var addBlock = function () {
       item.body.getTypeAsync(function (tr) {
         var html = !(tr && tr.status === Office.AsyncResultStatus.Succeeded && tr.value === Office.CoercionType.Text);
         var content = html ? sorekHeaderHtml(refs, topic)
           : "References: " + refs.map(function (r) { return r + (topic ? " – " + topic : ""); }).join("; ") + "\nSubject: " + topic + "\n\n";
         item.body.prependAsync(content, { coercionType: html ? Office.CoercionType.Html : Office.CoercionType.Text }, function () { finish(); });
+      });
+      };
+      if (refs.length) { addBlock(); return; }
+      // No number in the subject (new format "Sorek: topic"): take it from the quoted email
+      item.body.getAsync(Office.CoercionType.Text, function (br) {
+        var q = sorekQuotedRef((br && br.status === Office.AsyncResultStatus.Succeeded && br.value) || "");
+        if (!q) { finish(); return; }
+        refs.push(q); addBlock();
       });
     });
   } catch (e) { finish(); }
